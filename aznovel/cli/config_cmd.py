@@ -232,30 +232,39 @@ def select_or_create_profile() -> dict | None:
     profiles = load_profiles()
 
     if profiles:
-        console.print("\n[bold cyan]可用的 LLM 配置:[/]\n")
-        for i, p in enumerate(profiles, 1):
-            url_display = p.get("base_url", "") or "(默认)"
-            console.print(f"  [bold]{i}[/]. {p['name']}  [dim]{p.get('model', '')} | {url_display}[/]")
-        console.print(f"  [bold]n[/]. 新建配置")
-        console.print()
+        while True:
+            console.print("\n[bold cyan]可用的 LLM 配置:[/]\n")
+            for i, p in enumerate(profiles, 1):
+                url_display = p.get("base_url", "") or "(默认)"
+                console.print(f"  [bold]{i}[/]. {p['name']}  [dim]{p.get('model', '')} | {url_display}[/]")
+            console.print(f"  [bold]n[/]. 新建配置")
+            console.print()
 
-        choice = console.input("[bold green]选择配置 (输入编号或 n) > [/]")
+            try:
+                choice = console.input("[bold green]选择配置 (输入编号或 n) > [/]")
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n已取消。")
+                return None
 
-        if choice.strip().lower() == "n":
-            return _create_new_profile()
+            if not choice.strip():
+                warn("请输入选项编号或 n。")
+                continue
 
-        try:
-            idx = int(choice.strip()) - 1
-            if 0 <= idx < len(profiles):
-                selected = profiles[idx]
-                info(f"已选择: {selected['name']}")
-                return selected
-            else:
-                warn("无效选择，将创建新配置。")
+            if choice.strip().lower() == "n":
                 return _create_new_profile()
-        except ValueError:
-            warn("无效输入，将创建新配置。")
-            return _create_new_profile()
+
+            try:
+                idx = int(choice.strip()) - 1
+                if 0 <= idx < len(profiles):
+                    selected = profiles[idx]
+                    info(f"已选择: {selected['name']}")
+                    return selected
+                else:
+                    warn(f"无效选择，请输入 1-{len(profiles)} 或 n。")
+                    continue
+            except ValueError:
+                warn("无效输入，请输入编号或 n。")
+                continue
     else:
         console.print("\n[bold]首次使用，请配置 LLM 连接。[/]\n")
         return _create_new_profile()
@@ -265,25 +274,43 @@ def _create_new_profile() -> dict | None:
     """Interactively create a new LLM profile."""
     info("新建 LLM 配置\n")
 
-    name = typer.prompt("配置名称（用于标识，如 MiMo、GPT-4o）")
-    provider = typer.prompt("API 类型", default="openai",
-                            help="openai 兼容 OpenAI/DeepSeek/Qwen/本地模型等，anthropic 兼容 Claude")
+    try:
+        name = console.input("[bold green]配置名称（用于标识，如 MiMo、GPT-4o） > [/]")
+        if not name.strip():
+            warn("配置名称不能为空。")
+            return None
 
-    base_url = typer.prompt("API URL（留空使用默认）", default="")
-    api_key = typer.prompt("API Key", hide_input=True)
-    model = typer.prompt("Model ID（模型标识）")
+        provider = console.input("[bold green]API 类型 (openai/anthropic) [openai] > [/]")
+        if not provider.strip():
+            provider = "openai"
 
-    profile = {
-        "name": name,
-        "provider": provider,
-        "base_url": base_url,
-        "api_key": api_key,
-        "model": model,
-    }
+        base_url = console.input("[bold green]API URL（留空使用默认） > [/]")
 
-    add_profile(profile)
-    success(f"配置 '{name}' 已保存！")
-    return profile
+        api_key = console.input("[bold green]API Key > [/]")
+        if not api_key.strip():
+            warn("API Key 不能为空。")
+            return None
+
+        model = console.input("[bold green]Model ID（模型标识） > [/]")
+        if not model.strip():
+            warn("Model ID 不能为空。")
+            return None
+
+        profile = {
+            "name": name.strip(),
+            "provider": provider.strip(),
+            "base_url": base_url.strip(),
+            "api_key": api_key.strip(),
+            "model": model.strip(),
+        }
+
+        add_profile(profile)
+        success(f"配置 '{name.strip()}' 已保存！")
+        return profile
+
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n已取消。")
+        return None
 
 
 def apply_profile_to_config(profile: dict, target_path: Path) -> None:
