@@ -23,49 +23,54 @@ from aznovel.utils.rich_ui import console, error, info, panel, success, warn
 
 # ── Phase 1: Parameter Collection ──────────────────────────────────────────
 
-_COLLECT_SYSTEM_PROMPT = """你是一个专业的小说创作顾问，正在帮用户构思一部新小说。
+_COLLECT_SYSTEM_PROMPT = """你是一个专业的创作顾问，正在帮用户构思一部新作品。
 
 你的任务是通过自然对话收集以下信息：
-1. 小说标题
-2. 题材类型（可选：{genres}）
-3. 主角姓名、身份/背景、目标/动机
-4. 金手指/特殊能力（仅网文类题材需要，文学类不需要）
-5. 故事的核心卖点或亮点
-6. **写作规模**（必须询问）：
+1. **作品类型**（必须首先确认）：网文、文学、短剧
+2. 小说标题
+3. 题材类型（根据作品类型选择：{genres}）
+4. 主角姓名、身份/背景、目标/动机
+5. 金手指/特殊能力（仅网文类需要，文学类和短剧不需要）
+6. 故事的核心卖点或亮点
+7. **写作规模**（必须询问）：
    - 总共打算写多少字
-   - 每章大约多少字
+   - 每章/每集大约多少字
 
-题材分类说明：
-- 网文类：玄幻、仙侠、都市、历史、奇幻、科幻（网文风格）— 通常有金手指、升级、爽点
-- 文学类：纯文学、推理悬疑、言情文学、科幻文学 — 注重人物深度、文学性、思想性，不需要金手指
+作品类型说明（必须先问清楚）：
+- **网文**：玄幻、仙侠、都市、历史、奇幻、科幻 — 通常有金手指、升级、爽点，每章2000-3000字
+- **文学**：纯文学、推理悬疑、言情文学、科幻文学 — 注重人物深度、文学性、思想性，无金手指，每章3000-5000字
+- **短剧**：逆袭爽剧、甜宠、虐恋、复仇、穿越重生 — 强反转、快节奏、每集结尾有悬念，每集1500-2500字，剧本格式
 
 额外能力：
 - 如果用户提供了设定文件（txt/md），告诉他们可以用"导入设定"来导入
-- 如果用户有一部分已写好的小说，告诉他们可以用"导入小说"来分析续写
+- 如果用户有一部分已写好的作品，告诉他们可以用"导入小说"来分析续写
 - 如果用户有现成的大纲，告诉他们可以用"导入大纲"来导入
 
 对话规则：
 - 用轻松自然的中文交流，像朋友聊天一样
+- **第一个问题必须问：你想写什么类型？网文、文学还是短剧？**
 - 每次只问1-2个问题，不要一次性问太多
 - 根据用户的回答追问细节，帮助他们完善想法
 - 如果用户说"随便"或"你定"，给出合理的建议
-- 如果用户选择文学类题材，不要问金手指相关问题
-- **必须询问用户计划写的总字数和每章字数**，这是关键参数
+- 如果用户选择文学类，不要问金手指相关问题
+- 如果用户选择短剧，问清楚是哪种类型（逆袭/甜宠/虐恋/复仇等）
+- **必须询问用户计划写的总字数和每章/每集字数**，这是关键参数
 - 当你认为信息足够时，输出一个总结确认
 
 当所有信息收集完毕后，在最后一段输出严格的JSON格式（不要包裹在代码块中）：
 ===PARAMS===
-{{"title": "小说标题", "genre": "题材", "protagonist": "主角名", "identity": "身份", "goal": "目标", "golden_finger": "金手指（文学类填空字符串）", "selling_point": "核心卖点", "total_words": 1200000, "word_per_chapter": 2000, "import_settings": [], "import_novel": [], "import_outline": ""}}
+{{"title": "作品标题", "work_type": "网文/文学/短剧", "genre": "具体题材", "protagonist": "主角名", "identity": "身份", "goal": "目标", "golden_finger": "金手指（文学类和短剧填空字符串）", "selling_point": "核心卖点", "total_words": 1200000, "word_per_chapter": 2000, "import_settings": [], "import_novel": [], "import_outline": ""}}
 ===END===
 
 注意：
+- work_type: 必须是"网文"、"文学"或"短剧"之一，这是最重要的分类
 - total_words: 总字数目标（必须询问用户，不要自己猜测）
-- word_per_chapter: 每章字数（必须询问用户，网文通常2000-3000字，文学类通常3000-5000字）
+- word_per_chapter: 每章/每集字数（必须询问用户，网文通常2000-3000字，文学类通常3000-5000字，短剧通常1500-2500字）
 - target_chapters 和 chapters_per_volume 会根据 total_words 和 word_per_chapter 自动计算
 - import_settings: 用户提供的设定文件路径列表（空列表表示没有）
-- import_novel: 用户提供的已写小说文件路径列表（空列表表示没有）
+- import_novel: 用户提供的已写作品文件路径列表（空列表表示没有）
 - import_outline: 用户提供的大纲文件路径（空字符串表示没有）
-- golden_finger: 文学类题材填空字符串""，不要填"无"
+- golden_finger: 文学类和短剧题材填空字符串""，不要填"无"
 - 在输出JSON之前，先用自然语言总结你收集到的信息，请用户确认。"""
 
 
@@ -78,9 +83,12 @@ async def _conversational_collect(provider) -> dict | None:
 
     messages.append({
         "role": "assistant",
-        "content": "你好！我是你的小说创作顾问。让我们一起来构思你的新小说吧！\n\n"
-                   "先聊聊，你想写一个什么故事？有什么初步的想法吗？\n"
-                   "如果有现成的设定文件或已写好的小说，也可以告诉我路径，我来帮你分析。"
+        "content": "你好！我是你的创作顾问。让我们一起来构思你的新作品吧！\n\n"
+                   "首先，你想写什么类型的作品？\n"
+                   "1. **网文** — 玄幻、仙侠、都市、历史等，有金手指、升级、爽点\n"
+                   "2. **文学** — 纯文学、推理悬疑、言情文学等，注重深度和文学性\n"
+                   "3. **短剧** — 逆袭爽剧、甜宠、虐恋、复仇等，强反转、快节奏\n\n"
+                   "请告诉我你的选择（1/2/3 或直接说类型名称）："
     })
     console.print(f"\n[bold cyan]🤖 AZNovel 创作顾问[/]\n")
     console.print(messages[-1]["content"])
@@ -778,12 +786,30 @@ def _conversational_init_flow(project_dir: Path, llm_profile: dict | None = None
     target_chapters = total_words // word_per_chapter
     chapters_per_volume = max(10, target_chapters // 10)  # 默认分10卷
 
+    # Determine genre based on work_type
+    work_type = params.get("work_type", "")
+    genre = params.get("genre", "")
+    if work_type == "短剧":
+        # Map short drama sub-genres
+        drama_genre_map = {
+            "逆袭": "逆袭爽剧", "爽剧": "逆袭爽剧",
+            "甜宠": "甜宠剧", "甜宠剧": "甜宠剧",
+            "虐恋": "虐恋剧", "虐恋剧": "虐恋剧",
+            "复仇": "复仇剧", "复仇剧": "复仇剧",
+            "穿越": "穿越重生", "重生": "穿越重生",
+            "都市": "都市情感", "都市情感": "都市情感",
+            "古装": "古装剧", "古装剧": "古装剧",
+        }
+        genre = drama_genre_map.get(genre, "短剧")
+    elif not genre:
+        genre = "都市"
+
     console.print(f"\n[bold]正在创建项目...[/]\n")
 
     _create_project(
         project_dir,
-        title=params.get("title", "未命名小说"),
-        genre_input=params.get("genre", "都市"),
+        title=params.get("title", "未命名作品"),
+        genre_input=genre,
         prot_name=params.get("protagonist", ""),
         prot_cultivation=params.get("identity", ""),
         prot_goal=params.get("goal", ""),
