@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
@@ -57,7 +56,11 @@ def status_table(rows: list[tuple[str, str]], title: str = "状态") -> None:
 # ── Progress Tracker ────────────────────────────────────────────────────────
 
 class ProgressTracker:
-    """Persistent bottom-screen progress bar for multi-step workflows."""
+    """Simple step-based progress tracker for multi-step workflows.
+
+    Prints a status line at each step instead of using Live refresh,
+    so it doesn't interfere with user input.
+    """
 
     def __init__(self, phases: list[str]) -> None:
         self._phases = phases
@@ -65,35 +68,13 @@ class ProgressTracker:
         self._current = 0
         self._start_time = time.time()
 
-        self._progress = Progress(
-            TextColumn("[bold cyan]{task.description}"),
-            BarColumn(bar_width=30),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("[dim]({task.completed}/{task.total})"),
-            TimeElapsedColumn(),
-            TextColumn("[dim]预计剩余 {task.fields[eta]}"),
-            console=console,
-        )
-        self._task = self._progress.add_task(
-            "初始化", total=self._total, completed=0, eta="计算中..."
-        )
-        self._live = Live(self._progress, console=console, refresh_per_second=4, transient=False)
-        self._live.start()
-
-    def pause(self) -> None:
-        """Pause the progress bar display (for user input)."""
-        self._live.stop()
-
-    def resume(self) -> None:
-        """Resume the progress bar display."""
-        if not self._live.is_started:
-            self._live.start()
-
     def next(self, description: str | None = None) -> None:
-        """Advance to next phase."""
+        """Advance to next phase and print status."""
         self._current += 1
         phase = description or (self._phases[self._current - 1] if self._current <= self._total else "完成")
         elapsed = time.time() - self._start_time
+
+        # Calculate ETA
         if self._current > 0:
             per_phase = elapsed / self._current
             remaining = per_phase * (self._total - self._current)
@@ -104,22 +85,22 @@ class ProgressTracker:
         else:
             eta = "计算中..."
 
-        self._progress.update(
-            self._task,
-            completed=self._current,
-            description=phase,
-            eta=eta,
-        )
+        # Build progress bar
+        pct = int(self._current / self._total * 100)
+        bar_width = 20
+        filled = int(bar_width * self._current / self._total)
+        bar = "█" * filled + "░" * (bar_width - filled)
+
+        console.print(f"[bold cyan]进度[/] {bar} {pct:>3d}% ({self._current}/{self._total}) [dim]{phase}[/] [dim]剩余{eta}[/]")
 
     def finish(self) -> None:
-        """Complete and stop the progress bar."""
-        self._progress.update(
-            self._task,
-            completed=self._total,
-            description="完成",
-            eta="0秒",
-        )
-        self._live.stop()
+        """Print completion status."""
+        elapsed = time.time() - self._start_time
+        if elapsed < 60:
+            time_str = f"{int(elapsed)}秒"
+        else:
+            time_str = f"{int(elapsed // 60)}分{int(elapsed % 60)}秒"
+        console.print(f"[bold green]完成[/] {'█' * 20} 100% ({self._total}/{self._total}) [dim]耗时{time_str}[/]")
 
     def __enter__(self):
         return self

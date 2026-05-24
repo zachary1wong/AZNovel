@@ -96,19 +96,11 @@ async def _conversational_collect(provider, progress_tracker=None) -> dict | Non
 
     max_turns = 20
     for turn in range(max_turns):
-        # Pause progress bar during user input
-        if progress_tracker:
-            progress_tracker.pause()
-
         try:
             user_input = console.input("[bold green]你 > [/]")
         except (EOFError, KeyboardInterrupt):
             console.print("\n已取消初始化。")
             return None
-
-        # Resume progress bar after user input
-        if progress_tracker:
-            progress_tracker.resume()
 
         if not user_input.strip():
             continue
@@ -134,10 +126,6 @@ async def _conversational_collect(provider, progress_tracker=None) -> dict | Non
                 if summary:
                     console.print(f"\n[bold cyan]🤖 AZNovel 创作顾问[/]\n")
                     console.print(summary)
-
-                # Pause progress bar for confirmation
-                if progress_tracker:
-                    progress_tracker.pause()
 
                 console.print()
                 confirm = console.input("[bold green]确认这些信息？(y/n) > [/]")
@@ -333,16 +321,8 @@ async def _outline_review_loop(provider, outline: dict, progress_tracker=None) -
 
     max_iterations = 10
     for i in range(max_iterations):
-        # Pause progress bar during user input
-        if progress_tracker:
-            progress_tracker.pause()
-
         console.print()
         user_input = console.input("[bold green]对大纲的意见（输入'通过'确认，或提出修改意见） > [/]")
-
-        # Resume progress bar after user input
-        if progress_tracker:
-            progress_tracker.resume()
 
         if not user_input.strip():
             continue
