@@ -80,6 +80,15 @@ class ProgressTracker:
         self._live = Live(self._progress, console=console, refresh_per_second=4, transient=False)
         self._live.start()
 
+    def pause(self) -> None:
+        """Pause the progress bar display (for user input)."""
+        self._live.stop()
+
+    def resume(self) -> None:
+        """Resume the progress bar display."""
+        if not self._live.is_started:
+            self._live.start()
+
     def next(self, description: str | None = None) -> None:
         """Advance to next phase."""
         self._current += 1

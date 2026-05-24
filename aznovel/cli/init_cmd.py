@@ -74,7 +74,7 @@ _COLLECT_SYSTEM_PROMPT = """你是一个专业的创作顾问，正在帮用户�
 - 在输出JSON之前，先用自然语言总结你收集到的信息，请用户确认。"""
 
 
-async def _conversational_collect(provider) -> dict | None:
+async def _conversational_collect(provider, progress_tracker=None) -> dict | None:
     """Phase 1: Collect init parameters via conversation."""
     genres = list_genres()
     system = _COLLECT_SYSTEM_PROMPT.format(genres="、".join(genres))
@@ -96,11 +96,19 @@ async def _conversational_collect(provider) -> dict | None:
 
     max_turns = 20
     for turn in range(max_turns):
+        # Pause progress bar during user input
+        if progress_tracker:
+            progress_tracker.pause()
+
         try:
             user_input = console.input("[bold green]你 > [/]")
         except (EOFError, KeyboardInterrupt):
             console.print("\n已取消初始化。")
             return None
+
+        # Resume progress bar after user input
+        if progress_tracker:
+            progress_tracker.resume()
 
         if not user_input.strip():
             continue
@@ -126,6 +134,10 @@ async def _conversational_collect(provider) -> dict | None:
                 if summary:
                     console.print(f"\n[bold cyan]🤖 AZNovel 创作顾问[/]\n")
                     console.print(summary)
+
+                # Pause progress bar for confirmation
+                if progress_tracker:
+                    progress_tracker.pause()
 
                 console.print()
                 confirm = console.input("[bold green]确认这些信息？(y/n) > [/]")
@@ -313,7 +325,7 @@ async def _generate_outline_flow(provider, params: dict) -> dict | None:
     return outline
 
 
-async def _outline_review_loop(provider, outline: dict) -> dict | None:
+async def _outline_review_loop(provider, outline: dict, progress_tracker=None) -> dict | None:
     """Iterate on outline with user feedback until approved."""
     from aznovel.core.analyzer import revise_outline
 
@@ -321,8 +333,16 @@ async def _outline_review_loop(provider, outline: dict) -> dict | None:
 
     max_iterations = 10
     for i in range(max_iterations):
+        # Pause progress bar during user input
+        if progress_tracker:
+            progress_tracker.pause()
+
         console.print()
         user_input = console.input("[bold green]对大纲的意见（输入'通过'确认，或提出修改意见） > [/]")
+
+        # Resume progress bar after user input
+        if progress_tracker:
+            progress_tracker.resume()
 
         if not user_input.strip():
             continue
@@ -723,7 +743,7 @@ def _conversational_init_flow(project_dir: Path, llm_profile: dict | None = None
     async def _run():
         try:
             # Phase 1: Collect parameters
-            params = await _conversational_collect(provider)
+            params = await _conversational_collect(provider, progress_tracker)
             if params is None:
                 return None
             if progress_tracker:
@@ -751,7 +771,7 @@ def _conversational_init_flow(project_dir: Path, llm_profile: dict | None = None
 
             # Phase 4: Review outline with user
             if outline:
-                confirmed_outline = await _outline_review_loop(provider, outline)
+                confirmed_outline = await _outline_review_loop(provider, outline, progress_tracker)
                 if confirmed_outline is None:
                     return None
             else:
