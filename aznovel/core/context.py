@@ -7,12 +7,17 @@ from pathlib import Path
 from aznovel.models.contract import ChapterBrief, MasterSetting
 from aznovel.models.project import ProjectState
 from aznovel.storage import project_fs
-from aznovel.storage.template_loader import is_literary_genre
+from aznovel.storage.template_loader import is_drama_genre, is_literary_genre
 
 
 def _is_literary(state: ProjectState) -> bool:
     """Check if the project is literary fiction."""
     return is_literary_genre(state.project_info.genre)
+
+
+def _is_drama(state: ProjectState) -> bool:
+    """Check if the project is drama/script format."""
+    return is_drama_genre(state.project_info.genre)
 
 
 def build_writing_brief(
@@ -48,13 +53,24 @@ def build_writing_brief(
 
 def _build_commission(brief: ChapterBrief, state: ProjectState) -> str:
     """Section 1: Opening commission."""
-    lines = [
-        f"# 写作任务书",
-        f"**小说**: {state.project_info.title}",
-        f"**章节**: 第{brief.chapter_number:03d}章 - {brief.title}",
-        f"**目标**: {brief.goal}" if brief.goal else "",
-        f"**字数要求**: 2000-2500字",
-    ]
+    is_drama = _is_drama(state)
+
+    if is_drama:
+        lines = [
+            f"# 写作任务书",
+            f"**剧名**: {state.project_info.title}",
+            f"**集数**: 第{brief.chapter_number:03d}集 - {brief.title}",
+            f"**目标**: {brief.goal}" if brief.goal else "",
+            f"**字数要求**: 1500-2500字",
+        ]
+    else:
+        lines = [
+            f"# 写作任务书",
+            f"**小说**: {state.project_info.title}",
+            f"**章节**: 第{brief.chapter_number:03d}章 - {brief.title}",
+            f"**目标**: {brief.goal}" if brief.goal else "",
+            f"**字数要求**: 2000-2500字",
+        ]
     return "\n".join(l for l in lines if l)
 
 
@@ -112,6 +128,7 @@ def _build_character_section(brief: ChapterBrief, state: ProjectState) -> str:
 def _build_writing_guidance(master: MasterSetting, brief: ChapterBrief, state: ProjectState | None = None) -> str:
     """Section 4: How to write it better. Adapts for literary vs web novel genres."""
     is_lit = state and _is_literary(state)
+    is_drama = state and _is_drama(state)
 
     lines = ["# 写作指导"]
 
@@ -121,7 +138,7 @@ def _build_writing_guidance(master: MasterSetting, brief: ChapterBrief, state: P
         lines.append(f"**节奏策略**: {master.pacing_strategy}")
 
     # Web novel specific: satisfaction points
-    if not is_lit and master.satisfaction_points:
+    if not is_lit and not is_drama and master.satisfaction_points:
         lines.append("\n**爽点设计**:")
         for sp in master.satisfaction_points:
             lines.append(f"- {sp}")
@@ -135,6 +152,17 @@ def _build_writing_guidance(master: MasterSetting, brief: ChapterBrief, state: P
         lines.append("- 叙事要有自己的声音和风格")
         lines.append("- 情感表达要克制，通过细节和行为传达")
 
+    # Drama specific: script format guidance
+    if is_drama:
+        lines.append("\n**剧本格式要求**:")
+        lines.append("- 场景描述用【场景】标注，简洁明了")
+        lines.append("- 角色动作用括号（）标注")
+        lines.append("- 对话格式：角色名：台词内容")
+        lines.append("- 旁白/画外音用「旁白」标注")
+        lines.append("- 每集结尾必须有悬念钩子")
+        lines.append("- 节奏要快，场景转换要快")
+        lines.append("- 对话要短句为主，情绪张力强")
+
     # Anti-AI rules (common)
     lines.append("\n**反AI写作规则**:")
     lines.append("- 不要用总结性语句收尾")
@@ -146,6 +174,9 @@ def _build_writing_guidance(master: MasterSetting, brief: ChapterBrief, state: P
     if is_lit:
         lines.append("- 避免鸡汤式感悟和说教")
         lines.append("- 避免过度煽情和刻意的金句")
+    if is_drama:
+        lines.append("- 避免拖沓的场景描述")
+        lines.append("- 避免冗长的内心独白")
 
     if brief.anti_patterns:
         lines.append("\n**本文禁忌**:")
@@ -163,10 +194,17 @@ def _build_writing_guidance(master: MasterSetting, brief: ChapterBrief, state: P
 def _build_ending_target(brief: ChapterBrief, state: ProjectState | None = None) -> str:
     """Section 5: Where to end."""
     is_lit = state and _is_literary(state)
+    is_drama = state and _is_drama(state)
 
     lines = ["# 结尾要求"]
     if brief.ending_target:
         lines.append(f"\n**结尾感受**: {brief.ending_target}")
+    elif is_drama:
+        lines.append("\n每集结尾必须有悬念钩子，让观众想看下一集。可以是：")
+        lines.append("- 反转揭露（突然发现真相）")
+        lines.append("- 危机降临（新的威胁出现）")
+        lines.append("- 情感爆发（冲突升级）")
+        lines.append("- 悬念留白（关键信息未揭露）")
     elif is_lit:
         lines.append("\n结尾要有余韵，可以是开放式的，留给读者思考空间。不必刻意制造悬念。")
     else:

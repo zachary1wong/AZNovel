@@ -35,6 +35,15 @@ def is_literary_genre(genre: str) -> bool:
     return any(kw in genre for kw in literary_keywords)
 
 
+def is_drama_genre(genre: str) -> bool:
+    """Check if a genre is drama/script format (short drama, screenplay)."""
+    drama_keywords = [
+        "短剧", "微短剧", "短视频剧本", "剧本", "爽剧", "逆袭剧",
+        "甜宠剧", "虐恋剧", "复仇剧", "short_drama",
+    ]
+    return any(kw in genre for kw in drama_keywords)
+
+
 def resolve_genre_alias(name: str) -> str:
     """Resolve common genre aliases to canonical names."""
     aliases = {
@@ -66,5 +75,15 @@ def resolve_genre_alias(name: str) -> str:
         "硬科幻": "scifi_lit",
         "软科幻": "scifi_lit",
         "赛博朋克": "scifi_lit",
+        # 短剧类
+        "短剧": "short_drama",
+        "微短剧": "short_drama",
+        "短视频剧本": "short_drama",
+        "剧本": "short_drama",
+        "爽剧": "short_drama",
+        "逆袭剧": "short_drama",
+        "甜宠剧": "short_drama",
+        "虐恋剧": "short_drama",
+        "复仇剧": "short_drama",
     }
     return aliases.get(name, name)

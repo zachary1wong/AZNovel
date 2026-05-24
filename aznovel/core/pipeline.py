@@ -36,6 +36,25 @@ _DRAFT_SYSTEM_PROMPT = """你是一个专业的中文{writer_type}。你的任�
 10. 展示而非叙述（Show, don't tell）
 {extra_rules}"""
 
+_DRAFT_SYSTEM_PROMPT_DRAMA = """你是一个专业的短剧编剧。你的任务是根据写作任务书写一集短剧剧本。
+
+写作规则：
+1. 严格按照写作任务书的要求写作
+2. 字数控制在{word_min}-{word_max}字
+3. 不要写集数标题（标题会单独处理）
+4. 直接输出剧本内容
+5. 剧本格式：
+   - 场景描述用【场景】标注
+   - 角色动作用括号（）标注
+   - 对话格式：角色名：台词内容
+   - 旁白/画外音用「旁白」标注
+6. 每集结尾必须有悬念钩子
+7. 对话要短句为主，情绪张力强
+8. 节奏要快，不要拖沓
+9. 反转要合理但出人意料
+10. 冲突要激烈，情绪要浓烈
+{extra_rules}"""
+
 _DRAFT_EXTRA_LITERARY = """11. 注重语言的质感和文学性
 12. 人物塑造要有深度和层次
 13. 细节描写要服务于主题
@@ -43,6 +62,11 @@ _DRAFT_EXTRA_LITERARY = """11. 注重语言的质感和文学性
 
 _DRAFT_EXTRA_WEBNOVEL = """11. 注意爽点节奏，读者体验优先
 12. 适当设置悬念钩子"""
+
+_DRAFT_EXTRA_DRAMA = """11. 强反转、快节奏、情绪冲击
+12. 每集结尾必须有悬念
+13. 对话要有潜台词和冲突
+14. 场景转换要快，不要拖"""
 
 _POLISH_SYSTEM_PROMPT = """你是一个专业的小说润色编辑。根据审查报告修复章节中的问题。
 
@@ -53,6 +77,16 @@ _POLISH_SYSTEM_PROMPT = """你是一个专业的小说润色编辑。根据审�
 4. 输出完整的润色后章节内容（不要输出标题）
 5. 不要引入新的AI味"""
 
+_POLISH_SYSTEM_PROMPT_DRAMA = """你是一个专业的短剧剧本润色编辑。根据审查报告修复剧本中的问题。
+
+规则：
+1. 只修复报告中指出的问题，不要大幅改动
+2. 保持原文风格和节奏
+3. 修复后字数保持在{word_min}-{word_max}字
+4. 输出完整的润色后剧本内容（不要输出集数标题）
+5. 保持剧本格式：【场景】、（动作）、角色名：台词、「旁白」
+6. 不要引入新的AI味"""
+
 _REWRITE_SYSTEM_PROMPT = """你是一个专业的小说编辑。用户想修改一个已有章节，请根据修改要求重写该章节。
 
 规则：
@@ -62,6 +96,17 @@ _REWRITE_SYSTEM_PROMPT = """你是一个专业的小说编辑。用户想修改�
 4. 不要写章节标题
 5. 保持原文的写作风格（除非用户要求改变风格）
 6. 直接输出重写后的正文内容"""
+
+_REWRITE_SYSTEM_PROMPT_DRAMA = """你是一个专业的短剧编剧。用户想修改一集剧本，请根据修改要求重写。
+
+规则：
+1. 严格按照用户的修改要求重写
+2. 保持与整体故事的连贯性
+3. 字数控制在{word_min}-{word_max}字
+4. 不要写集数标题
+5. 保持剧本格式：【场景】、（动作）、角色名：台词、「旁白」
+6. 保持原文的写作风格（除非用户要求改变风格）
+7. 直接输出重写后的剧本内容"""
 
 _ANALYZE_CHANGE_PROMPT = """你是一个小说结构分析师。判断用户的修改要求是否会影响后续章节。
 
@@ -193,20 +238,30 @@ class WritingPipeline:
 
     async def _draft(self, brief_text: str) -> str:
         """Generate chapter draft from writing brief."""
-        from aznovel.storage.template_loader import is_literary_genre
+        from aznovel.storage.template_loader import is_drama_genre, is_literary_genre
 
         state = self._state_store.load()
-        is_lit = is_literary_genre(state.project_info.genre)
+        genre = state.project_info.genre
+        is_lit = is_literary_genre(genre)
+        is_drama = is_drama_genre(genre)
 
         wmin = int(self.word_target * 0.8)
         wmax = int(self.word_target * 1.2)
 
-        writer_type = "文学小说作家" if is_lit else "中文网文写手"
-        extra_rules = _DRAFT_EXTRA_LITERARY if is_lit else _DRAFT_EXTRA_WEBNOVEL
-        prompt = _DRAFT_SYSTEM_PROMPT.format(
-            word_min=wmin, word_max=wmax,
-            writer_type=writer_type, extra_rules=extra_rules,
-        )
+        if is_drama:
+            writer_type = "短剧编剧"
+            extra_rules = _DRAFT_EXTRA_DRAMA
+            prompt = _DRAFT_SYSTEM_PROMPT_DRAMA.format(
+                word_min=wmin, word_max=wmax,
+                extra_rules=extra_rules,
+            )
+        else:
+            writer_type = "文学小说作家" if is_lit else "中文网文写手"
+            extra_rules = _DRAFT_EXTRA_LITERARY if is_lit else _DRAFT_EXTRA_WEBNOVEL
+            prompt = _DRAFT_SYSTEM_PROMPT.format(
+                word_min=wmin, word_max=wmax,
+                writer_type=writer_type, extra_rules=extra_rules,
+            )
 
         messages = [
             {"role": "system", "content": prompt},
@@ -217,9 +272,15 @@ class WritingPipeline:
 
     async def _polish(self, chapter_text: str, review_report: str) -> str:
         """Polish chapter based on review findings."""
+        from aznovel.storage.template_loader import is_drama_genre
+
+        state = self._state_store.load()
+        is_drama = is_drama_genre(state.project_info.genre)
+
         wmin = int(self.word_target * 0.8)
         wmax = int(self.word_target * 1.2)
-        prompt = _POLISH_SYSTEM_PROMPT.format(word_min=wmin, word_max=wmax)
+        prompt_template = _POLISH_SYSTEM_PROMPT_DRAMA if is_drama else _POLISH_SYSTEM_PROMPT
+        prompt = prompt_template.format(word_min=wmin, word_max=wmax)
         messages = [
             {"role": "system", "content": prompt},
             {
@@ -322,9 +383,15 @@ class WritingPipeline:
 
         # Step 1: Rewrite the chapter
         info(f"正在重写第{chapter}章...")
+        from aznovel.storage.template_loader import is_drama_genre
+
+        state = self._state_store.load()
+        is_drama = is_drama_genre(state.project_info.genre)
+
         wmin = int(self.word_target * 0.8)
         wmax = int(self.word_target * 1.2)
-        prompt = _REWRITE_SYSTEM_PROMPT.format(word_min=wmin, word_max=wmax)
+        prompt_template = _REWRITE_SYSTEM_PROMPT_DRAMA if is_drama else _REWRITE_SYSTEM_PROMPT
+        prompt = prompt_template.format(word_min=wmin, word_max=wmax)
 
         messages = [
             {"role": "system", "content": prompt},
@@ -341,7 +408,6 @@ class WritingPipeline:
         info(f"  重写字数: {word_count}")
 
         # Step 2: Review (unless minimal)
-        state = self._state_store.load()
         master = self._contract_mgr.load_master_setting()
 
         review_contract = self._contract_mgr.generate_review_contract(

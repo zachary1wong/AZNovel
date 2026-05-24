@@ -1,0 +1,46 @@
+{
+  "name": "短剧",
+  "genre_type": "drama",
+  "core_selling_point": "强反转、快节奏、情绪冲击、爽感密集",
+  "sub_genres": ["逆袭爽剧", "甜宠", "虐恋", "复仇", "穿越重生", "都市情感", "古装"],
+  "core_tone": "节奏快、冲突强、反转多、情绪浓烈",
+  "pacing_strategy": "每集一个钩子+一个反转，3集一个小高潮，10集一个大反转",
+  "satisfaction_points": [
+    "身份反转震惊全场",
+    "打脸看不起主角的人",
+    "隐藏实力/身份曝光",
+    "误会解除真相大白",
+    "复仇成功大快人心",
+    "甜蜜互动撒狗粮",
+    "绝地反击逆袭成功"
+  ],
+  "anti_patterns": [
+    "节奏拖沓注水",
+    "对话冗长无信息量",
+    "反转过于牵强",
+    "人物动机不合理",
+    "情绪铺垫不足就反转",
+    "逻辑漏洞明显"
+  ],
+  "format_requirements": {
+    "episode_length": "1-3分钟/集",
+    "total_episodes": "80-100集",
+    "scene_format": "场景描述简洁，以对话和动作为主",
+    "hook_style": "每集结尾必须有悬念钩子",
+    "dialogue_style": "短句为主，潜台词丰富，情绪张力强"
+  },
+  "world_building": {
+    "structure": "现代都市/古代/异世界，场景集中",
+    "conflict_source": "身份秘密、情感纠葛、利益冲突、家族恩怨"
+  },
+  "outline_structure": {
+    "chapters_per_volume": 10,
+    "volume_beats": [
+      "开篇设悬念+人设立住",
+      "小冲突+初次反转",
+      "矛盾升级+情绪爆发",
+      "真相揭露+大反转",
+      "高潮解决+新悬念"
+    ]
+  }
+}
