@@ -69,16 +69,12 @@ def _auto_init(profile_name: str | None = None):
     from aznovel.cli.init_cmd import run_init
     from aznovel.utils.rich_ui import ProgressTracker
 
-    phases = ["LLM配置", "参数收集", "文件分析", "大纲生成", "大纲审核", "项目创建"]
-    tracker = ProgressTracker(phases)
-
-    # Step 1: Get LLM profile
+    # Step 1: Get LLM profile (before starting progress tracker)
     if profile_name:
         # Use named profile directly (no interactive selection)
         profiles = load_profiles()
         found = [p for p in profiles if p.get("name") == profile_name]
         if not found:
-            tracker.finish()
             from aznovel.utils.rich_ui import error
             error(f"未找到 LLM 配置: {profile_name}")
             error(f"可用配置: {', '.join(p['name'] for p in profiles)}")
@@ -88,15 +84,16 @@ def _auto_init(profile_name: str | None = None):
         profile = select_or_create_profile()
 
     if profile is None:
-        tracker.finish()
         console.print("未选择 LLM 配置，已取消。")
         raise typer.Exit(1)
-    tracker.next("LLM配置")
 
     # Step 2: Apply to global config so init conversation can use it
     apply_profile_to_config(profile, _GLOBAL_CONFIG)
 
-    # Step 3: Run init (will use the global config we just wrote)
+    # Step 3: Start progress tracker and run init
+    phases = ["参数收集", "文件分析", "大纲生成", "大纲审核", "项目创建"]
+    tracker = ProgressTracker(phases)
+
     run_init(".", None, None, llm_profile=profile, progress_tracker=tracker)
 
 
