@@ -160,20 +160,37 @@ class BtwMonitor:
 
     def _reader(self) -> None:
         """Background thread: read stdin, queue /btw commands."""
-        while self._active:
-            try:
+        import os
+        fd = sys.stdin.fileno()
+        # Set non-blocking so we can poll _active flag
+        old_flags = os.get_blocking(fd)
+        os.set_blocking(fd, False)
+        try:
+            buf = b""
+            while self._active:
                 if self._paused:
                     time.sleep(0.1)
                     continue
-                line = sys.stdin.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if line.startswith("/btw"):
-                    self._queue.put_nowait(line)
-                # Non-/btw input is silently ignored during action
-            except (EOFError, OSError):
-                break
+                try:
+                    chunk = os.read(fd, 1024)
+                    if not chunk:
+                        time.sleep(0.05)
+                        continue
+                    buf += chunk
+                    # Process complete lines
+                    while b"\n" in buf:
+                        line_bytes, buf = buf.split(b"\n", 1)
+                        try:
+                            line = line_bytes.decode("utf-8", errors="replace").strip()
+                        except Exception:
+                            continue
+                        if line.startswith("/btw"):
+                            self._queue.put_nowait(line)
+                except (BlockingIOError, OSError):
+                    time.sleep(0.05)
+                    continue
+        finally:
+            os.set_blocking(fd, old_flags)
 
     async def monitor_loop(self) -> None:
         """Async loop: process queued /btw commands until stopped."""
