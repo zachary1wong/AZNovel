@@ -91,8 +91,9 @@ def _format_project_status(status_data: dict) -> str:
     lines.append(f"小说标题: {pi.get('title', '未设置')}")
     lines.append(f"题材: {pi.get('genre', '未设置')}")
 
-    prog = status_data.get("progress", {})
-    lines.append(f"已完成章节: {prog.get('current_chapter', 0)}")
+    # Use actual file count instead of stale state
+    existing = status_data.get("existing_chapters", [])
+    lines.append(f"已完成章节: {len(existing)}")
     lines.append(f"目标章数: {pi.get('target_chapters', 600)}")
 
     prot = status_data.get("protagonist", {})
