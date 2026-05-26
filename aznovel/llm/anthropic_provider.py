@@ -7,7 +7,7 @@ import logging
 
 import anthropic
 
-from aznovel.llm.base import LLMConfig, LLMResponse, TokenUsage
+from aznovel.llm.base import LLMConfig, LLMResponse, TokenUsage, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -33,34 +33,50 @@ class AnthropicProvider:
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         # Anthropic requires system message separate from messages
         system_text, chat_messages = self._extract_system(messages)
 
-        resp = await self._client.messages.create(
-            model=self.config.model,
-            system=system_text,
-            messages=chat_messages,
-            temperature=temperature if temperature is not None else self.config.temperature,
-            max_tokens=max_tokens or self.config.max_tokens,
-            timeout=self.config.timeout,
-        )
-        # Extract text from content blocks (skip tool_use or other non-text blocks)
+        kwargs: dict = {
+            "model": self.config.model,
+            "system": system_text,
+            "messages": chat_messages,
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "max_tokens": max_tokens or self.config.max_tokens,
+            "timeout": self.config.timeout,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        resp = await self._client.messages.create(**kwargs)
+
+        # Extract text and tool calls from content blocks
         content = ""
+        tool_calls = None
         if resp.content:
             for block in resp.content:
                 if hasattr(block, "text"):
                     content = block.text
-                    break
+                elif block.type == "tool_use":
+                    if tool_calls is None:
+                        tool_calls = []
+                    tool_calls.append(ToolCall(
+                        id=block.id,
+                        name=block.name,
+                        arguments=block.input if isinstance(block.input, dict) else {},
+                    ))
+
         usage = TokenUsage(
-            prompt_tokens=resp.usage.input_tokens,
-            completion_tokens=resp.usage.output_tokens,
-            total_tokens=resp.usage.input_tokens + resp.usage.output_tokens,
+            prompt_tokens=resp.usage.input_tokens if resp.usage else 0,
+            completion_tokens=resp.usage.output_tokens if resp.usage else 0,
+            total_tokens=(resp.usage.input_tokens + resp.usage.output_tokens) if resp.usage else 0,
         )
         return LLMResponse(
             content=content,
             model=resp.model,
             usage=usage,
+            tool_calls=tool_calls,
         )
 
     async def chat_json(
@@ -92,15 +108,12 @@ class AnthropicProvider:
         import re
         # Strip code fences
         if "```" in text:
-            # Remove ```json ... ``` or ``` ... ```
             match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
             if match:
                 text = match.group(1).strip()
-        # Try parsing
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Try to find JSON object in the text
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 return json.loads(match.group(0))

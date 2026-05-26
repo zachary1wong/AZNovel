@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,42 @@ from aznovel.storage import project_fs
 from aznovel.storage.state_store import StateStore
 from aznovel.storage.template_loader import list_genres, load_genre, resolve_genre_alias
 from aznovel.utils.rich_ui import console, error, info, panel, success, warn
+
+# ── Tool definitions for init flow ──────────────────────────────────────────
+
+_READ_FILE_TOOL = {
+    "name": "read_file",
+    "description": "读取用户指定的文件内容。当用户提供文件路径时调用此工具来读取文件。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "文件的绝对路径",
+            }
+        },
+        "required": ["path"],
+    },
+}
+
+_TOOLS = [_READ_FILE_TOOL]
+
+
+def _execute_tool(name: str, arguments: dict) -> str:
+    """Execute a tool call and return the result."""
+    if name == "read_file":
+        path = Path(arguments.get("path", "")).expanduser()
+        if not path.exists():
+            return f"错误：文件不存在 {path}"
+        try:
+            text = path.read_text(encoding="utf-8")
+            if len(text) > 50000:
+                text = text[:50000] + f"\n\n... (文件过大，已截断到50000字，原文件共{len(text)}字)"
+            return text
+        except Exception as e:
+            return f"错误：读取文件失败 - {e}"
+    return f"错误：未知工具 {name}"
+
 
 # ── Phase 1: Parameter Collection ──────────────────────────────────────────
 
@@ -45,7 +82,7 @@ _COLLECT_SYSTEM_PROMPT = """你是一个专业的创作顾问，正在帮用户�
 - 如果用户提供了设定文件（txt/md），告诉他们可以用"导入设定"来导入
 - 如果用户有一部分已写好的作品，告诉他们可以用"导入小说"来分析续写
 - 如果用户有现成的大纲，告诉他们可以用"导入大纲"来导入
-- **重要：你无法读取文件，用户需要在创建项目后手动导入文件**
+- 你可以使用 read_file 工具读取用户提供的文件
 
 对话规则：
 - 用轻松自然的中文交流，像朋友聊天一样
@@ -56,7 +93,8 @@ _COLLECT_SYSTEM_PROMPT = """你是一个专业的创作顾问，正在帮用户�
 - 如果用户选择文学类，不要问金手指相关问题
 - 如果用户选择短剧，问清楚是哪种类型（逆袭/甜宠/虐恋/复仇等）
 - **必须询问用户计划写的总字数和每章/每集字数**，这是关键参数
-- **不要尝试读取文件或调用工具，你只能通过对话收集信息**
+- 如果用户提供了文件路径，使用 read_file 工具读取文件内容，然后从内容中提取信息
+- **重要：如果读取的文件包含小说正文内容（叙事性文字、对话、场景描写等），必须询问用户："这个文件包含了已写好的章节内容，是否要导入为已有章节？"如果用户确认，将文件路径添加到 import_novel 列表中**
 - 当你认为信息足够时，输出一个总结确认
 
 当所有信息收集完毕后，在最后一段输出严格的JSON格式（不要包裹在代码块中）：
@@ -113,8 +151,35 @@ async def _conversational_collect(provider, progress_tracker=None) -> dict | Non
 
         messages.append({"role": "user", "content": user_input})
 
-        resp = await provider.chat(messages, temperature=0.7, max_tokens=2048)
-        reply = resp.content
+        # LLM call with tool support - loop until no more tool calls
+        reply = ""
+        for _tool_round in range(5):  # max 5 tool call rounds per turn
+            resp = await provider.chat(messages, temperature=0.7, max_tokens=2048, tools=_TOOLS)
+
+            # Handle tool calls
+            if resp.tool_calls:
+                # Append assistant message with tool calls
+                assistant_msg = {"role": "assistant", "content": resp.content or ""}
+                # Anthropic/OpenAI providers handle tool_calls format differently,
+                # but we re-call with tool results appended
+                messages.append(assistant_msg)
+
+                for tc in resp.tool_calls:
+                    console.print(f"  [dim]📂 读取文件: {tc.arguments.get('path', '')}[/]")
+                    result = _execute_tool(tc.name, tc.arguments)
+                    messages.append({
+                        "role": "user",
+                        "content": f"[工具结果: {tc.name}]\n{result}",
+                    })
+                continue  # Let LLM process the tool results
+
+            # No tool calls - we have a text response
+            reply = resp.content
+            break
+
+        if not reply:
+            continue
+
         messages.append({"role": "assistant", "content": reply})
 
         if "===PARAMS===" in reply and "===END===" in reply:
@@ -259,7 +324,7 @@ async def _generate_outline_flow(provider, params: dict) -> dict | None:
              "输出JSON格式：{{\"master_outline\": \"总纲概述\", \"volumes\": [{{\"volume\": 1, \"title\": \"卷标题\", \"summary\": \"概述\", \"key_conflicts\": [], \"climax\": \"\", \"chapter_range\": \"\", \"chapters\": [{{\"chapter\": 1, \"title\": \"\", \"goal\": \"\", \"summary\": \"\"}}]}}]}}"},
         ]
         try:
-            outline = await provider.chat_json(messages, temperature=0.3, max_tokens=8192)
+            outline = await provider.chat_json(messages, temperature=0.3, max_tokens=16384)
             return outline
         except Exception as e:
             warn(f"大纲解析失败: {e}，将重新生成。")
@@ -367,10 +432,10 @@ def _display_outline(outline: dict) -> None:
         if vol.get("climax"):
             lines.append(f"  高潮: {vol['climax']}")
 
-        # Show first volume's chapters in detail
+        # Show chapters for all volumes
         chapters = vol.get("chapters", [])
-        if chapters and vol_num == 1:
-            lines.append(f"  [dim]章节明细:[/]")
+        if chapters:
+            lines.append(f"  [dim]章节明细 ({len(chapters)}章):[/]")
             for ch in chapters[:10]:  # Show first 10 chapters
                 ch_num = ch.get("chapter", "?")
                 ch_title = ch.get("title", "")
@@ -384,6 +449,114 @@ def _display_outline(outline: dict) -> None:
 
 
 # ── Phase 4: Project Creation ──────────────────────────────────────────────
+
+def _cn_to_int(cn_num: str) -> int | None:
+    """Convert Chinese numeral string to integer."""
+    if cn_num.isdigit():
+        return int(cn_num)
+    cn_map = {
+        '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+        '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+        '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15,
+        '十六': 16, '十七': 17, '十八': 18, '十九': 19, '二十': 20,
+    }
+    return cn_map.get(cn_num)
+
+
+def _detect_chapter_number(path: Path) -> int | None:
+    """Detect chapter number from filename or file content.
+
+    Checks filename for "第X章" patterns (Chinese numerals or digits).
+    Returns chapter number as int, or None if no chapter detected.
+    """
+    # Check filename (e.g., "参考信息和第一章.md", "第1章.md", "chapter_001.md")
+    name = path.stem
+    match = re.search(r'第([一二三四五六七八九十百千万\d]+)章', name)
+    if match:
+        return _cn_to_int(match.group(1))
+    # Also check for "chapter_N" pattern
+    match = re.search(r'chapter[_\s-]*(\d+)', name, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _extract_chapter_content(text: str) -> str | None:
+    """Extract chapter content from a mixed reference/chapter file.
+
+    Detects where reference info (metadata, bullet points, descriptions) ends
+    and narrative prose begins. Returns the chapter content, or None if
+    no clear chapter content is found.
+
+    Strategy:
+    1. Look for "全文开头" marker - content after it is the chapter description,
+       and the actual narrative starts after the next empty line
+    2. If no marker, look for the first line that starts with narrative prose
+       (not bullet points, not character descriptions with parentheses)
+    """
+    lines = text.split('\n')
+
+    # Strategy 1: Look for "全文开头" marker
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('全文开头'):
+            # Found the marker - the actual chapter content starts after
+            # the next empty line following this marker
+            found_empty = False
+            for j in range(i + 1, len(lines)):
+                next_stripped = lines[j].strip()
+                if not next_stripped:
+                    found_empty = True
+                    continue
+                if found_empty and next_stripped:
+                    # This is the start of actual chapter content
+                    return '\n'.join(lines[j:])
+            # If we reached here, no content after marker
+            return None
+
+    # Strategy 2: Heuristic detection
+    # Patterns that indicate reference/metadata lines
+    ref_patterns = [
+        re.compile(r'^[-•·]\s'),           # Bullet points
+        re.compile(r'^\d+\.\s'),           # Numbered lists
+        re.compile(r'^\*'),                # Markdown bold/emphasis at line start
+        re.compile(r'^(女|男)\d*[（(]'),    # "女1（张茜茜）" character descriptions
+    ]
+
+    chapter_start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Skip first 3 lines (might be title/metadata)
+        if i < 3:
+            continue
+
+        # Check if line looks like reference metadata
+        is_ref = any(p.match(stripped) for p in ref_patterns)
+
+        # Lines with Chinese colon "：" followed by short content are likely metadata
+        if '：' in stripped[:30] and len(stripped) < 60:
+            is_ref = True
+
+        # Lines that are pure description (short, no punctuation at end)
+        if len(stripped) < 15 and not stripped[-1] in '。！？…～':
+            is_ref = True
+
+        # Lines with Chinese parentheses are often character descriptions
+        if '（' in stripped[:30] and '）' in stripped:
+            is_ref = True
+
+        if not is_ref:
+            chapter_start = i
+            break
+
+    if chapter_start is None:
+        return None
+
+    return '\n'.join(lines[chapter_start:])
+
 
 def _create_project(
     project_dir: Path,
@@ -505,10 +678,34 @@ def _create_project(
         for fpath in imported_novel_files:
             p = Path(fpath).expanduser()
             if p.exists():
-                dest = project_dir / "正文" / p.name
-                if not dest.exists():
-                    dest.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
-                    info(f"已复制小说文件: {p.name}")
+                text = p.read_text(encoding="utf-8")
+                # Detect chapter number from filename
+                ch_num = _detect_chapter_number(p)
+                if ch_num:
+                    from aznovel.utils.text import chapter_filename
+                    # Try to extract chapter content from mixed reference/chapter file
+                    chapter_text = _extract_chapter_content(text)
+                    if chapter_text and len(chapter_text) > 100:
+                        # Save extracted chapter content
+                        dest = project_dir / "正文" / chapter_filename(ch_num)
+                        if not dest.exists():
+                            dest.write_text(chapter_text, encoding="utf-8")
+                            info(f"已提取第{ch_num}章内容: {dest.name} ({len(chapter_text)}字)")
+                        # Also save original file as reference
+                        ref_dest = project_dir / "正文" / p.name
+                        if not ref_dest.exists():
+                            ref_dest.write_text(text, encoding="utf-8")
+                    else:
+                        # No mixed content, save whole file as chapter
+                        dest = project_dir / "正文" / chapter_filename(ch_num)
+                        if not dest.exists():
+                            dest.write_text(text, encoding="utf-8")
+                            info(f"已复制为第{ch_num}章: {dest.name}")
+                else:
+                    dest = project_dir / "正文" / p.name
+                    if not dest.exists():
+                        dest.write_text(text, encoding="utf-8")
+                        info(f"已复制小说文件: {p.name}")
 
     # Save outline
     if outline:

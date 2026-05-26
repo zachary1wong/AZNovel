@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -17,6 +18,21 @@ _JSON_INSTRUCTION = (
     "\n\nYou MUST respond with valid JSON only. No markdown, no explanation, "
     "just the JSON object."
 )
+
+
+@dataclass
+class ToolCall:
+    """Represents a tool call from the LLM."""
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class ToolResult:
+    """Result of executing a tool."""
+    tool_call_id: str
+    content: str
 
 
 class OpenAIProvider:
@@ -35,14 +51,19 @@ class OpenAIProvider:
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
-        resp = await self._client.chat.completions.create(
-            model=self.config.model,
-            messages=messages,
-            temperature=temperature if temperature is not None else self.config.temperature,
-            max_tokens=max_tokens or self.config.max_tokens,
-            timeout=self.config.timeout,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "max_tokens": max_tokens or self.config.max_tokens,
+            "timeout": self.config.timeout,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        resp = await self._client.chat.completions.create(**kwargs)
         choice = resp.choices[0]
         usage = None
         if resp.usage:
@@ -51,10 +72,24 @@ class OpenAIProvider:
                 completion_tokens=resp.usage.completion_tokens,
                 total_tokens=resp.usage.total_tokens,
             )
+
+        # Check for tool calls
+        message = choice.message
+        tool_calls = None
+        if message.tool_calls:
+            tool_calls = []
+            for tc in message.tool_calls:
+                tool_calls.append(ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=json.loads(tc.function.arguments) if tc.function.arguments else {},
+                ))
+
         return LLMResponse(
-            content=choice.message.content or "",
+            content=message.content or "",
             model=resp.model,
             usage=usage,
+            tool_calls=tool_calls,
         )
 
     async def chat_json(

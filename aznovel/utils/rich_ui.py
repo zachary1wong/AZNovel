@@ -112,19 +112,27 @@ class ProgressTracker:
 # ── /btw Non-blocking Monitor ──────────────────────────────────────────────
 
 class BtwMonitor:
-    """Background stdin monitor for /btw commands during long-running actions."""
+    """Background stdin monitor for /btw commands during long-running actions.
+
+    Thread safety: ``_current_step`` is guarded by a ``threading.Lock``.
+    ``pause()`` / ``resume()`` temporarily suspend stdin reading so that
+    interactive prompts (e.g. rewrite confirmation) don't compete for input.
+    """
 
     def __init__(self, root: Path) -> None:
         self._root = root
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._thread: threading.Thread | None = None
         self._active = False
+        self._paused = False
         self._current_step = ""
+        self._step_lock = threading.Lock()
         self._start_time = time.time()
 
     def start(self) -> None:
         """Start background stdin reader thread."""
         self._active = True
+        self._paused = False
         self._start_time = time.time()
         self._thread = threading.Thread(target=self._reader, daemon=True)
         self._thread.start()
@@ -133,14 +141,30 @@ class BtwMonitor:
         """Stop the background thread."""
         self._active = False
 
+    def pause(self) -> None:
+        """Temporarily suspend stdin reading (for interactive prompts)."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Resume stdin reading after an interactive prompt."""
+        self._paused = False
+
     def set_step(self, step: str) -> None:
         """Update current pipeline step (called from pipeline)."""
-        self._current_step = step
+        with self._step_lock:
+            self._current_step = step
+
+    def get_step(self) -> str:
+        with self._step_lock:
+            return self._current_step
 
     def _reader(self) -> None:
         """Background thread: read stdin, queue /btw commands."""
         while self._active:
             try:
+                if self._paused:
+                    time.sleep(0.1)
+                    continue
                 line = sys.stdin.readline()
                 if not line:
                     break
@@ -155,7 +179,7 @@ class BtwMonitor:
         """Async loop: process queued /btw commands until stopped."""
         while self._active or not self._queue.empty():
             try:
-                line = await asyncio.wait_for(self._queue.get(), timeout=0.3)
+                line = await asyncio.wait_for(self._queue.get(), timeout=0.5)
                 self._handle(line)
             except asyncio.TimeoutError:
                 continue
@@ -175,12 +199,18 @@ class BtwMonitor:
         else:
             self._show_help()
 
+    def _print_panel(self, title: str, content: str) -> None:
+        """Print /btw output inside a panel for visual separation."""
+        console.print()
+        console.print(Panel(content, title=f"[bold cyan]/btw {title}[/]",
+                            border_style="dim cyan", padding=(0, 1)))
+
     def _show_help(self) -> None:
-        console.print("\n[bold cyan]── /btw 命令 ──[/]")
-        console.print("  /btw status    — 项目状态")
-        console.print("  /btw progress  — 当前执行步骤")
-        console.print("  /btw chapter N — 查看第N章摘要")
-        console.print("  /btw           — 显示此帮助\n")
+        self._print_panel("帮助",
+            "  /btw status    — 项目状态\n"
+            "  /btw progress  — 当前执行步骤\n"
+            "  /btw chapter N — 查看第N章摘要\n"
+            "  /btw           — 显示此帮助")
 
     def _show_status(self) -> None:
         from aznovel.storage.state_store import StateStore
@@ -193,44 +223,44 @@ class BtwMonitor:
         existing = sorted(chapters_dir.glob("第*章.md")) if chapters_dir.exists() else []
 
         elapsed = int(time.time() - self._start_time)
-        console.print(f"\n[bold cyan]── 项目状态 ──[/]")
-        console.print(f"  小说: {state.project_info.title}")
-        console.print(f"  已完成: {len(existing)} 章 / 目标 {state.project_info.target_chapters} 章")
-        console.print(f"  主角: {state.protagonist.name}")
-        console.print(f"  本次操作已耗时: {elapsed}秒")
-        console.print()
+        lines = [
+            f"小说: {state.project_info.title}",
+            f"已完成: {len(existing)} 章 / 目标 {state.project_info.target_chapters} 章",
+            f"主角: {state.protagonist.name}",
+            f"本次操作已耗时: {elapsed}秒",
+        ]
+        self._print_panel("项目状态", "\n".join(lines))
 
     def _show_progress(self) -> None:
         elapsed = int(time.time() - self._start_time)
-        console.print(f"\n[bold cyan]── 当前进度 ──[/]")
-        console.print(f"  步骤: {self._current_step or '准备中...'}")
-        console.print(f"  已耗时: {elapsed}秒")
-        console.print()
+        step = self.get_step()
+        lines = [
+            f"步骤: {step or '准备中...'}",
+            f"已耗时: {elapsed}秒",
+        ]
+        self._print_panel("当前进度", "\n".join(lines))
 
     def _show_chapter(self, num_str: str) -> None:
         from aznovel.storage import project_fs
-        from aznovel.utils.text import extract_chapter_number
 
         if not num_str:
-            console.print("\n[bold yellow]用法: /btw chapter N[/]\n")
+            self._print_panel("提示", "用法: /btw chapter N")
             return
 
         try:
             num = int(num_str)
         except ValueError:
-            console.print("\n[bold yellow]章节号必须是数字[/]\n")
+            self._print_panel("提示", "章节号必须是数字")
             return
 
         paths = project_fs.project_paths(self._root)
         path = paths["chapters_dir"] / f"第{num:03d}章.md"
         if not path.exists():
-            console.print(f"\n[bold yellow]第{num}章不存在[/]\n")
+            self._print_panel("提示", f"第{num}章不存在")
             return
 
         text = path.read_text(encoding="utf-8")
         preview = text[:500]
         if len(text) > 500:
             preview += "\n... (已截断)"
-        console.print(f"\n[bold cyan]── 第{num}章预览 ──[/]")
-        console.print(preview)
-        console.print()
+        self._print_panel(f"第{num}章预览", preview)

@@ -16,14 +16,26 @@ from aznovel.utils.rich_ui import console, error
 
 
 async def _run_write_inner(
-    provider: LLMProvider, root: Path, chapter: int, mode: str, word_target: int = 2000, on_step=None
+    provider: LLMProvider, root: Path, chapter: int, mode: str, word_target: int = 2000, on_step=None, overwrite: bool = False
 ) -> bool:
     """Core write logic, callable from chat or CLI."""
+    from aznovel.storage import project_fs
+    from aznovel.utils.text import chapter_filename
+
+    paths = project_fs.project_paths(root)
+    ch_path = paths["chapters_dir"] / chapter_filename(chapter)
+
+    if ch_path.exists() and not overwrite:
+        from aznovel.utils.rich_ui import warn
+        warn(f"第{chapter:03d}章已存在: {ch_path.name}")
+        warn("如需重写，请使用 aznovel rewrite 命令，或添加 --overwrite 参数。")
+        return False
+
     pipeline = WritingPipeline(provider, root, word_target=word_target)
     return await pipeline.write_chapter(chapter, mode=mode, on_step=on_step)
 
 
-def run_write(chapter: int, mode: str, outline_file: str | None, profile_name: str | None = None) -> None:
+def run_write(chapter: int, mode: str, outline_file: str | None, profile_name: str | None = None, overwrite: bool = False) -> None:
     """CLI entry point for write command."""
     root = require_project_root()
 
@@ -37,14 +49,13 @@ def run_write(chapter: int, mode: str, outline_file: str | None, profile_name: s
     if outline_file:
         outline = json.loads(Path(outline_file).read_text(encoding="utf-8"))
 
-    word_target = config_data.get("word_target", 2000)
     provider = create_provider(llm_config)
 
     console.print(f"\n[bold]开始写作第{chapter:03d}章 ({mode} 模式, 目标{word_target}字)[/]\n")
 
     async def _run():
         try:
-            return await _run_write_inner(provider, root, chapter, mode, word_target)
+            return await _run_write_inner(provider, root, chapter, mode, word_target, overwrite=overwrite)
         finally:
             await provider.close()
 

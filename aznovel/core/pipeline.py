@@ -346,6 +346,11 @@ class WritingPipeline:
         Returns:
             (success, was_cascaded): whether the rewrite succeeded and whether subsequent chapters were deleted.
         """
+        def _step(msg: str):
+            info(msg)
+            if on_step:
+                on_step(msg)
+
         # Load existing chapter
         chapter_path = self._paths["chapters_dir"] / chapter_filename(chapter)
         if not chapter_path.exists():
@@ -364,7 +369,7 @@ class WritingPipeline:
 
         if subsequent and not force_cascade:
             # Analyze if change is structural
-            info("分析修改影响...")
+            _step("分析修改影响...")
             analysis = await self.analyze_change(chapter, modification)
             is_structural = analysis.get("structural", True)
             reason = analysis.get("reason", "")
@@ -382,7 +387,7 @@ class WritingPipeline:
             was_cascaded = True
 
         # Step 1: Rewrite the chapter
-        info(f"正在重写第{chapter}章...")
+        _step(f"重写第{chapter}章...")
         from aznovel.storage.template_loader import is_drama_genre
 
         state = self._state_store.load()
@@ -415,7 +420,7 @@ class WritingPipeline:
         )
 
         if mode != "minimal":
-            info("审查重写内容...")
+            _step("审查重写内容...")
             review_result = await self._review_engine.review_chapter(
                 new_text, review_contract
             )
@@ -434,9 +439,10 @@ class WritingPipeline:
             # Reset progress
             state.progress.current_chapter = chapter
             self._state_store.save(state)
-            info(f"已删除 {len(subsequent)} 个后续章节，进度已重置为第{chapter}章。")
+            _step(f"已删除 {len(subsequent)} 个后续章节，进度已重置为第{chapter}章。")
 
         # Step 4: Commit the rewritten chapter
+        _step("提交重写内容...")
         chapter_brief = self._contract_mgr.generate_chapter_brief(
             chapter, state, master
         )
@@ -447,6 +453,7 @@ class WritingPipeline:
         )
 
         # Step 5: Save
+        _step("保存章节...")
         self._save_chapter(chapter, title, new_text)
 
         success(f"第{chapter}章重写完成！")

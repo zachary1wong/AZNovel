@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+
+@dataclass
+class ToolCall:
+    """Represents a tool call from the LLM."""
+    id: str
+    name: str
+    arguments: dict
 
 
 @dataclass
@@ -14,6 +22,7 @@ class LLMResponse:
     model: str
     usage: TokenUsage | None = None
     raw: dict | None = None
+    tool_calls: list[ToolCall] | None = None
 
 
 @dataclass
@@ -51,6 +60,7 @@ class LLMProvider(Protocol):
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         """Send a chat completion request and return plain text."""
         ...

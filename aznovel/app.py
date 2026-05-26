@@ -146,10 +146,11 @@ def write(
     mode: str = typer.Option("default", "--mode", "-m", help="模式: default/fast/minimal"),
     outline: str = typer.Option(None, "--outline", "-o", help="大纲文件路径"),
     profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="覆盖已有章节"),
 ):
     """写作新章节（完整流水线）。"""
     from aznovel.cli.write_cmd import run_write
-    run_write(chapter, mode, outline, profile_name=profile)
+    run_write(chapter, mode, outline, profile_name=profile, overwrite=overwrite)
 
 
 @app.command()
@@ -174,6 +175,35 @@ def rewrite(
     """重写已有章节。如果改动影响后续章节，会提示删除。"""
     from aznovel.cli.rewrite_cmd import run_rewrite
     run_rewrite(chapter, modification, cascade, mode, profile_name=profile)
+
+
+@app.command("reverse-outline")
+def reverse_outline_cmd(profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称")):
+    """从已写章节反推大纲，方便检阅整本书结构。"""
+    from aznovel.cli.chat_cmd import _run_action
+    from aznovel.cli.config_cmd import build_llm_config
+    from aznovel.llm.provider_factory import create_provider
+    from aznovel.storage.project_fs import require_project_root
+
+    root = require_project_root()
+    llm_config = build_llm_config(profile)
+    provider = create_provider(llm_config)
+
+    async def _run():
+        try:
+            ok = await _run_action({"action": "reverse_outline", "params": {}}, provider, root)
+            return ok
+        finally:
+            await provider.close()
+
+    try:
+        result = asyncio.run(_run())
+        if not result:
+            raise typer.Exit(1)
+    except Exception as e:
+        from aznovel.utils.rich_ui import error
+        error(f"反推大纲失败: {e}")
+        raise typer.Exit(1)
 
 
 @app.command()
