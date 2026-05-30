@@ -24,16 +24,11 @@ logger = logging.getLogger(__name__)
 _DRAFT_SYSTEM_PROMPT = """你是一个专业的中文{writer_type}。你的任务是根据写作任务书写一章小说。
 
 写作规则：
-1. 严格按照写作任务书的要求写作
+1. **必须严格按照「本章剧情大纲」写作**——大纲中指定的角色、事件、场景必须全部出现在正文中，可以在大纲框架内自由发挥细节，但不可遗漏或替换大纲指定的核心内容
 2. 字数控制在{word_min}-{word_max}字
 3. 不要写章节标题（标题会单独处理）
 4. 直接输出正文内容
-5. 不要用总结性语句收尾
-6. 不要用泛化副词（轻轻地、缓缓地、默默地）
-7. 情绪通过生理反应展现，不要直接命名情绪
-8. 对话要有潜台词，不要直白表达
-9. 节奏要有变化，不要匀速推进
-10. 展示而非叙述（Show, don't tell）
+5. 展示而非叙述（Show, don't tell）
 {extra_rules}"""
 
 _DRAFT_SYSTEM_PROMPT_DRAMA = """你是一个专业的短剧编剧。你的任务是根据写作任务书写一集短剧剧本。
@@ -176,7 +171,7 @@ class WritingPipeline:
         self._contract_mgr.save_chapter_brief(chapter_brief)
 
         review_contract = self._contract_mgr.generate_review_contract(
-            chapter, state, master
+            chapter, state, master, chapter_brief=chapter_brief
         )
         self._contract_mgr.save_review_contract(review_contract)
 
@@ -414,9 +409,10 @@ class WritingPipeline:
 
         # Step 2: Review (unless minimal)
         master = self._contract_mgr.load_master_setting()
+        chapter_brief = self._contract_mgr.generate_chapter_brief(chapter, state, master)
 
         review_contract = self._contract_mgr.generate_review_contract(
-            chapter, state, master
+            chapter, state, master, chapter_brief=chapter_brief
         )
 
         if mode != "minimal":

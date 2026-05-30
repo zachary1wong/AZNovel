@@ -13,7 +13,7 @@ from aznovel.models.review import ReviewIssue, ReviewResult
 
 logger = logging.getLogger(__name__)
 
-_REVIEW_SYSTEM_PROMPT = """你是一个专业的小说审查编辑。请从以下6个维度检查章节问题：
+_REVIEW_SYSTEM_PROMPT = """你是一个专业的小说审查编辑。请从以下7个维度检查章节问题：
 
 1. 设定一致性：世界观、力量体系、人物设定是否矛盾
 2. 时间线：事件时间顺序是否合理
@@ -21,12 +21,14 @@ _REVIEW_SYSTEM_PROMPT = """你是一个专业的小说审查编辑。请从以�
 4. 人物一致性：角色行为是否符合性格设定（OOC）
 5. 逻辑：因果关系、战斗结果是否可信
 6. AI味：泛化副词、句式单一、情感直白命名、展示后叙述解释
+7. 大纲合规性：正文是否严格遵循了本章大纲的要求，大纲中指定的角色、事件、场景是否全部出现
 
 审查规则：
 - 只报告可验证的问题，每个问题必须有文本证据
 - 严重程度：critical/high/medium/low
 - critical和high标记为blocking
 - 不要提出修改建议，只指出问题
+- 大纲合规性问题：如果大纲要求的内容（角色、事件、场景）在正文中缺失或偏离，必须标记为 critical 级别
 
 输出JSON：
 {{
@@ -91,8 +93,17 @@ class ReviewEngine:
     def _build_prompt(self, chapter_text: str, contract: ReviewContract) -> str:
         parts = []
 
+        if contract.outline_summary:
+            parts.append("## 本章大纲要求（必须严格遵循）")
+            parts.append(contract.outline_summary)
+
+        if contract.must_cover:
+            parts.append("\n## 必须覆盖的内容")
+            for item in contract.must_cover:
+                parts.append(f"- {item}")
+
         if contract.established_rules:
-            parts.append("## 已建立的规则")
+            parts.append("\n## 已建立的规则")
             for rule in contract.established_rules:
                 parts.append(f"- {rule}")
 

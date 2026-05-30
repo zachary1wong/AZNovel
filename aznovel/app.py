@@ -10,7 +10,7 @@ from aznovel.utils.rich_ui import console
 
 app = typer.Typer(
     name="aznovel",
-    help="AZNovel - AI辅助中文网文写作工具",
+    help="AZNovel - AI辅助中文小说写作CLI工具",
     invoke_without_command=True,
     no_args_is_help=False,
 )
@@ -204,6 +204,20 @@ def reverse_outline_cmd(profile: str = typer.Option(None, "--profile", "-p", hel
         from aznovel.utils.rich_ui import error
         error(f"反推大纲失败: {e}")
         raise typer.Exit(1)
+
+
+@app.command()
+def polish(
+    chapter: int = typer.Option(None, "--chapter", "-c", help="精修指定章节"),
+    start: int = typer.Option(None, "--start", "-s", help="起始章节号"),
+    end: int = typer.Option(None, "--end", "-e", help="结束章节号"),
+    all_chapters: bool = typer.Option(False, "--all", "-a", help="精修全部章节"),
+    careful: bool = typer.Option(False, "--careful", help="逐段精修模式，更仔细但更慢"),
+    profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
+):
+    """精修章节文字，修复语病和不通顺，不改剧情结构。"""
+    from aznovel.cli.polish_cmd import run_polish
+    run_polish(chapter=chapter, start=start, end=end, all_chapters=all_chapters, careful=careful, profile_name=profile)
 
 
 @app.command()

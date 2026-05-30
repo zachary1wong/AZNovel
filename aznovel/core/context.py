@@ -80,6 +80,10 @@ def _build_story_context(
     """Section 2: This chapter's story context."""
     lines = ["# 本章剧情"]
 
+    # 大纲剧情摘要（最高优先级，必须严格遵循）
+    if brief.summary:
+        lines.append(f"\n**本章剧情大纲（必须严格遵循，不可遗漏、替换或偏离）**:\n{brief.summary}")
+
     if prev_summary:
         lines.append(f"\n**前情提要**:\n{prev_summary}")
 

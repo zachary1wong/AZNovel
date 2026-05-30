@@ -28,6 +28,7 @@ class ChapterBrief(BaseModel):
     contract_type: str = "CHAPTER_BRIEF"
     chapter_number: int = 0
     title: str = ""
+    summary: str = ""  # 大纲中的剧情摘要，必须遵循
     goal: str = ""
     resistance: str = ""
     cost: str = ""
@@ -51,7 +52,10 @@ class ReviewContract(BaseModel):
     check_character: bool = True
     check_logic: bool = True
     check_ai_flavor: bool = True
+    check_outline_compliance: bool = True
     known_entities: list[str] = Field(default_factory=list)
     established_rules: list[str] = Field(default_factory=list)
     previous_chapter_summary: str = ""
     blocking_keywords: list[str] = Field(default_factory=list)
+    must_cover: list[str] = Field(default_factory=list)
+    outline_summary: str = ""

@@ -69,6 +69,7 @@ _SYSTEM_PROMPT = """你是一个AI小说写作助手，正在帮用户管理一�
 11. show_outline — 显示当前大纲
 12. rewrite_chapter — 重写章节，params: {{"chapter": 数字, "modification": "修改要求", "cascade": false}}
 13. reverse_outline — 从已写章节反推大纲（不覆盖原大纲）
+14. polish_chapter — 精修章节，修复语病不改剧情，params: {{"chapter": 数字}} 或 {{"start": 数字, "end": 数字}} 或 {{"all": true}}
 """
 
 _ACTIONS_DESC = """- 写下一章：接着当前进度写下一章
@@ -81,7 +82,64 @@ _ACTIONS_DESC = """- 写下一章：接着当前进度写下一章
 - 修改大纲：根据反馈修改大纲
 - 查看大纲：显示当前大纲
 - 重写章节：修改已有章节，如果影响后续会提示删除
-- 反推大纲：从已写章节反推出完整大纲，方便检阅"""
+- 反推大纲：从已写章节反推出完整大纲，方便检阅
+- 精修章节：逐段修复语病和不通顺，不改剧情结构，支持单章/范围/全书"""
+
+
+def _rebuild_entities_from_outline(root: Path, outline: dict) -> None:
+    """Rebuild state.entities from the new outline, clearing stale entities from old outlines.
+
+    Strategy: serialize the new outline to plain text, then keep only entities whose names
+    appear in that text. This avoids fragile regex-based name extraction and works regardless
+    of naming conventions.
+    Also cleans up review contracts that reference stale entities.
+    """
+    import json as json_mod
+    from aznovel.storage.state_store import StateStore
+
+    store = StateStore(root)
+    state = store.load()
+
+    # Serialize the new outline to a single searchable text
+    outline_text_parts = [outline.get("master_outline", "")]
+    for vol in outline.get("volumes", []):
+        outline_text_parts.append(vol.get("summary", ""))
+        outline_text_parts.append(vol.get("climax", ""))
+        for ch in vol.get("chapters", []):
+            outline_text_parts.append(ch.get("title", ""))
+            outline_text_parts.append(ch.get("summary", ""))
+            outline_text_parts.append(ch.get("goal", ""))
+    outline_text = "\n".join(outline_text_parts)
+
+    # Keep entities whose names still appear in the new outline
+    new_entities = []
+    for entity in state.entities:
+        if entity.name in outline_text:
+            new_entities.append(entity)
+
+    old_count = len(state.entities)
+    state.entities = new_entities
+    store.save(state)
+
+    # Clean up review contracts that contain stale entity references
+    contracts_dir = root / ".aznovel" / "contracts"
+    if contracts_dir.exists():
+        current_names = {e.name for e in new_entities}
+        for review_file in contracts_dir.glob("*.review.json"):
+            try:
+                data = json_mod.loads(review_file.read_text(encoding="utf-8"))
+                old_entities = data.get("known_entities", [])
+                new_known = [e for e in old_entities if e in current_names]
+                if len(new_known) != len(old_entities):
+                    data["known_entities"] = new_known
+                    review_file.write_text(json_mod.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+    from aznovel.utils.rich_ui import info
+    cleaned = old_count - len(new_entities)
+    if cleaned > 0:
+        info(f"已清理 {cleaned} 个旧大纲残留实体，保留 {len(new_entities)} 个当前实体")
 
 
 def _format_project_status(status_data: dict) -> str:
@@ -315,6 +373,9 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
         from aznovel.cli.init_cmd import _save_outline
         _save_outline(root, title, outline)
 
+        # Rebuild state.entities from new outline (clear stale entities from old outlines)
+        _rebuild_entities_from_outline(root, outline)
+
         # Display
         from aznovel.cli.init_cmd import _display_outline
         _display_outline(outline)
@@ -358,10 +419,10 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
 
         # Save revised outline
         from aznovel.cli.init_cmd import _save_outline
-        from aznovel.storage.state_store import StateStore
-        store = StateStore(root)
-        state = store.load()
         _save_outline(root, state.project_info.title, revised)
+
+        # Rebuild state.entities from revised outline (clear stale entities)
+        _rebuild_entities_from_outline(root, revised)
 
         # Display
         from aznovel.cli.init_cmd import _display_outline
@@ -535,6 +596,50 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
         info(f"  JSON: {outline_json_path.relative_to(root)}")
         info(f"  Markdown: {outline_md_path.relative_to(root)}")
         return True
+
+    elif name == "polish_chapter":
+        from aznovel.cli.polish_cmd import _run_polish_inner
+        from aznovel.utils.text import extract_chapter_number
+        from aznovel.utils.rich_ui import warn, error, info
+
+        chapters_dir = paths["chapters_dir"]
+        chapter_files = sorted(chapters_dir.glob("第*章.md")) if chapters_dir.exists() else []
+        if not chapter_files:
+            warn("还没有任何章节")
+            return False
+
+        all_nums = []
+        for f in chapter_files:
+            num = extract_chapter_number(f.name)
+            if num:
+                all_nums.append(num)
+
+        # Determine target chapters
+        if params.get("all"):
+            target_chapters = all_nums
+        elif params.get("start") and params.get("end"):
+            target_chapters = [n for n in all_nums if params["start"] <= n <= params["end"]]
+        elif params.get("chapter"):
+            ch = params["chapter"]
+            if ch not in all_nums:
+                error(f"第{ch:03d}章不存在")
+                return False
+            target_chapters = [ch]
+        else:
+            warn("请指定章节：chapter（单章）、start+end（范围）、all（全部）")
+            return False
+
+        info(f"将精修 {len(target_chapters)} 章")
+
+        auto_save = params.get("all") or (params.get("start") and params.get("end"))
+        success_count = 0
+        for ch_num in target_chapters:
+            ok = await _run_polish_inner(provider, root, ch_num, on_step=_on_step, auto_save=auto_save)
+            if ok:
+                success_count += 1
+
+        info(f"精修完成！修改了 {success_count}/{len(target_chapters)} 章。")
+        return success_count > 0
 
     return False
 

@@ -80,9 +80,16 @@ class ContractManager:
     ) -> ChapterBrief:
         """Generate ChapterBrief from state + master setting + outline."""
         outline = outline or {}
+        summary = outline.get("summary", "")
+        # 从 summary 中提取关键内容作为 must_cover
+        must_cover = []
+        if summary:
+            must_cover.append(summary)
+
         return ChapterBrief(
             chapter_number=chapter,
             title=outline.get("title", f"第{chapter}章"),
+            summary=summary,
             goal=outline.get("goal", ""),
             resistance=outline.get("resistance", ""),
             cost=outline.get("cost", ""),
@@ -93,11 +100,13 @@ class ContractManager:
             time_anchor=outline.get("time_anchor", ""),
             ending_target=outline.get("ending_feeling", ""),
             forbidden_zones=outline.get("forbidden_zones", master.anti_patterns[:3]),
+            must_cover=must_cover,
             anti_patterns=master.anti_patterns,
         )
 
     def generate_review_contract(
-        self, chapter: int, state: ProjectState, master: MasterSetting
+        self, chapter: int, state: ProjectState, master: MasterSetting,
+        chapter_brief: ChapterBrief | None = None,
     ) -> ReviewContract:
         """Generate ReviewContract for a chapter."""
         return ReviewContract(
@@ -105,4 +114,6 @@ class ContractManager:
             known_entities=[e.name for e in state.entities],
             established_rules=master.world_rules,
             blocking_keywords=["[待填]", "[TODO]", "placeholder"],
+            must_cover=chapter_brief.must_cover if chapter_brief else [],
+            outline_summary=chapter_brief.summary if chapter_brief else "",
         )
