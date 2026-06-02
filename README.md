@@ -390,6 +390,16 @@ cd novel-2
 aznovel write -c 1 -p config-b
 ```
 
+### Mac App 壳子
+
+仓库内提供一个轻量 macOS App 壳子，可以在一个窗口里并行启动多条小说工作线。它不重新实现 API，而是直接调用同一套 CLI：
+
+```bash
+macos/AZNovelApp/build_and_install.sh
+```
+
+安装后可在 `/Applications/AZNovel.app` 打开。每条工作线都可以选择小说目录、LLM profile 和动作；“自定义 CLI 参数”模式支持输入任意 `aznovel` 参数。
+
 ## /btw 命令
 
 在写作过程中，可以输入 `/btw` 命令查看信息，不阻断当前操作：
