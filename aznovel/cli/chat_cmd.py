@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
+import time
 from pathlib import Path
 
 from rich.markdown import Markdown
@@ -23,10 +25,90 @@ except ImportError:
 
 def _timed_input(prompt_text: str) -> str:
     """Input with arrow key support and styled prompt."""
-    # Use ANSI escape codes for colored prompt, which readline can handle
-    # \001 and \002 mark non-printable chars so readline calculates width correctly
-    ansi_prompt = f"\001\033[1;32m\002{prompt_text}\001\033[0m\002"
-    return input(ansi_prompt)
+    # Use plain text prompt — ANSI color codes cause readline width miscalculation
+    # on some terminals, leading to backspace eating the prompt characters.
+    return input(prompt_text)
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed time as human-readable: 3s, 1m05s, 1h02m03s."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    return f"{minutes}m{secs:02d}s"
+
+
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+class TimerSpinner:
+    """Live timer spinner that shows elapsed time during async operations.
+
+    Usage:
+        spinner = TimerSpinner(label="思考中")
+        spinner.start()
+        result = await some_async_work()
+        spinner.stop()
+    """
+
+    def __init__(self, label: str = "思考中"):
+        self.label = label
+        self._task: asyncio.Task | None = None
+        self._start: float = 0
+
+    def start(self):
+        self._start = time.time()
+        self._task = asyncio.create_task(self._run())
+
+    async def _run(self):
+        frame_idx = 0
+        while True:
+            elapsed = time.time() - self._start
+            frame = _SPINNER_FRAMES[frame_idx % len(_SPINNER_FRAMES)]
+            frame_idx += 1
+            timer_text = f"\r  {frame} {self.label}... {_format_elapsed(elapsed)}"
+            sys.stdout.write(f"\033[K{timer_text}")
+            sys.stdout.flush()
+            await asyncio.sleep(0.5)
+
+    def stop(self):
+        if self._task:
+            self._task.cancel()
+            self._task = None
+        # Clear the spinner line
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+
+async def _chat_with_timer(
+    provider: LLMProvider,
+    messages: list[dict[str, str]],
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    tools: list[dict] | None = None,
+    label: str = "思考中",
+) -> str:
+    """Call provider.chat() with a live timer spinner.
+
+    Shows a Braille spinner + elapsed time that updates every 0.5s,
+    so the user always knows the process is alive and how long it's been.
+    Returns the full response content string.
+    """
+    spinner = TimerSpinner(label=label)
+    spinner.start()
+    try:
+        resp = await provider.chat(
+            messages, temperature=temperature, max_tokens=max_tokens, tools=tools
+        )
+    finally:
+        spinner.stop()
+
+    return resp.content
 
 # Maximum messages to keep in history (excluding system prompt).
 # Each action adds ~3 messages (user request, assistant reply, status update, summary),
@@ -43,7 +125,9 @@ _SYSTEM_PROMPT = """你是一个AI小说写作助手，正在帮用户管理一�
 
 ## 回复规则
 - 用简洁自然的中文回复
-- 当用户要求执行操作时，先确认理解是否正确，然后输出执行指令
+- 绝对不要在对话回复里直接创作完整章节正文；正文必须通过 write_next/write_chapter/write_batch 动作生成并保存
+- 用户说“继续”“下一章”“写下一章”“开始写作”时，视为 write_next
+- 当用户要求执行操作时，先用一句话确认理解，然后输出执行指令
 - 执行指令格式（单独一行）：
   ===ACTION==={{"action": "动作名", "params": {{...}}}}===ACTION_END===
 - 如果用户只是聊天或问问题，正常回复即可，不需要输出指令
@@ -68,8 +152,15 @@ _SYSTEM_PROMPT = """你是一个AI小说写作助手，正在帮用户管理一�
 10. revise_outline — 修改大纲，params: {{"feedback": "修改意见或需求内容"}}
 11. show_outline — 显示当前大纲
 12. rewrite_chapter — 重写章节，params: {{"chapter": 数字, "modification": "修改要求", "cascade": false}}
-13. reverse_outline — 从已写章节反推大纲（不覆盖原大纲）
-14. polish_chapter — 精修章节，修复语病不改剧情，params: {{"chapter": 数字}} 或 {{"start": 数字, "end": 数字}} 或 {{"all": true}}
+13. repair_chapter — 按审查报告局部修复章节阻断问题，params: {{"chapter": 数字}}
+14. reverse_outline — 从已写章节反推大纲（不覆盖原大纲）
+15. polish_chapter — 精修章节，修复语病不改剧情，params: {{"chapter": 数字}} 或 {{"start": 数字, "end": 数字}} 或 {{"all": true}}
+16. final_safe_repair — 终检安全修复全书硬逻辑问题，只用小补丁且不整章重写，params: {{"all": true}} 或 {{"chapters": [数字]}}
+17. final_polish — 终稿精修全书，只修出戏表达和衔接薄点，params: {{"all": true}} 或 {{"chapters": [数字]}}
+18. finalize_book — 完稿流程：先终检安全修复，再终稿精修，params: {{"all": true}}
+19. rename_character — 角色改名并同步小名/昵称/关联称谓，params: {{"old_name": "旧名", "new_name": "新名", "aliases": "旧称=新称,旧称2=新称2（可选）", "dry_run": false}}
+20. auto_run_book — 无人值守写完整本书并产出终稿精修稿，params: {{"target": 数字（可选）, "max_repair_attempts": 数字（可选）}}
+21. export_book — 导出全书为单个文件，params: {{"format": "epub|pdf|mobi|docx|all"}} 或 {{"formats": ["epub", "pdf"]}}
 """
 
 _ACTIONS_DESC = """- 写下一章：接着当前进度写下一章
@@ -82,8 +173,15 @@ _ACTIONS_DESC = """- 写下一章：接着当前进度写下一章
 - 修改大纲：根据反馈修改大纲
 - 查看大纲：显示当前大纲
 - 重写章节：修改已有章节，如果影响后续会提示删除
+- 修复章节：按最新审查报告局部修复阻断问题，不先全章重写
 - 反推大纲：从已写章节反推出完整大纲，方便检阅
-- 精修章节：逐段修复语病和不通顺，不改剧情结构，支持单章/范围/全书"""
+- 精修章节：逐段修复语病和不通顺，不改剧情结构，支持单章/范围/全书
+- 最终安全修复：跨章节终检硬逻辑问题，只应用可验证的小补丁，不整章重写
+- 终稿精修：完稿前修掉出戏表达、薄弱过桥和小型文字瑕疵，只做可验证小补丁
+- 完稿流程：先最终安全修复，再终稿精修
+- 角色改名：受控更新角色名、小名、昵称和项目实体信息，并生成 before/after 审计报告
+- 无人值守写作：从当前进度写到目标章数，失败时自动修复候选稿，最后自动终检和终稿精修
+- 导出全书：把所有已写章节合并导出为单个 epub/pdf/mobi/docx 文件"""
 
 
 def _rebuild_entities_from_outline(root: Path, outline: dict) -> None:
@@ -184,6 +282,271 @@ def _parse_action(reply: str) -> dict | None:
         return None
 
 
+def _parse_int_text(text: str) -> int | None:
+    """Parse Arabic or small Chinese numerals used in casual commands."""
+    raw = text.strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        value = int(raw)
+        return value if value > 0 else None
+
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+
+    if raw in digits and digits[raw] > 0:
+        return digits[raw]
+    if raw == "十":
+        return 10
+    if "十" in raw:
+        left, _, right = raw.partition("十")
+        tens = digits.get(left, 1 if left == "" else None)
+        ones = digits.get(right, 0 if right == "" else None)
+        if tens is not None and ones is not None:
+            value = tens * 10 + ones
+            return value if value > 0 else None
+    return None
+
+
+def _export_formats_from_text(text: str) -> list[str]:
+    """Detect requested export formats from a natural-language command."""
+    lower = text.lower()
+    compact = re.sub(r"[\s，。！？!?,.、：:；;]+", "", lower)
+
+    if any(marker in compact for marker in ("所有格式", "全部格式", "全格式")):
+        return ["epub", "pdf", "mobi", "docx"]
+
+    formats: list[str] = []
+    for fmt, aliases in {
+        "epub": ("epub",),
+        "pdf": ("pdf",),
+        "mobi": ("mobi", "kindle"),
+        "docx": ("docx", "word"),
+    }.items():
+        if any(alias in lower or alias in compact for alias in aliases):
+            formats.append(fmt)
+    return formats
+
+
+def _deterministic_action_from_input(user_input: str) -> dict | None:
+    """Map common short chat commands to actions before asking the LLM.
+
+    This keeps writing requests on the save-to-disk pipeline instead of letting the
+    chat model accidentally draft chapter prose in the terminal.
+    """
+    text = user_input.strip()
+    if not text:
+        return None
+
+    compact = re.sub(r"[\s，。！？!?,.、：:；;]+", "", text).lower()
+    command = re.sub(r"^(请|帮我|麻烦你|麻烦)", "", compact)
+    command = re.sub(r"(吧|一下)$", "", command)
+    num_pattern = r"([0-9]+|[一二两三四五六七八九十]{1,3})"
+
+    if any(trigger in command for trigger in ("导出", "输出")):
+        formats = _export_formats_from_text(text)
+        if formats:
+            return {"action": "export_book", "params": {"formats": formats}}
+
+    if command in {
+        "继续",
+        "继续写",
+        "续写",
+        "下一章",
+        "写下一章",
+        "写下章",
+        "开始写",
+        "开始写作",
+        "开写",
+        "continue",
+        "go",
+    }:
+        return {"action": "write_next", "params": {}}
+
+    match = re.fullmatch(rf"(?:写|创作|生成|续写)第{num_pattern}章(?:正文|内容)?", command)
+    if match:
+        chapter = _parse_int_text(match.group(1))
+        if chapter:
+            return {"action": "write_chapter", "params": {"chapter": chapter}}
+
+    match = re.fullmatch(rf"(?:连续|批量|一口气)(?:写|创作|生成|续写){num_pattern}章", command)
+    if match:
+        count = _parse_int_text(match.group(1))
+        if count:
+            return {"action": "write_batch", "params": {"count": count}}
+
+    match = re.fullmatch(rf"(?:写|创作|生成|续写){num_pattern}章", command)
+    if match:
+        count = _parse_int_text(match.group(1))
+        if count:
+            return {"action": "write_batch", "params": {"count": count}}
+
+    if command in {"状态", "进度", "项目状态", "显示状态", "查看状态", "显示进度", "查看进度"}:
+        return {"action": "show_status", "params": {}}
+
+    if command in {"查看大纲", "显示大纲", "当前大纲"}:
+        return {"action": "show_outline", "params": {}}
+
+    if command in {"反推大纲", "从正文反推大纲"}:
+        return {"action": "reverse_outline", "params": {}}
+
+    rename_match = re.search(
+        r"(?:把|将)?(?:角色|人物)?(?P<old>[\u4e00-\u9fffA-Za-z0-9_·]{2,20}?)(?:改名为|重命名为|改成|改为|换成)(?P<new>[\u4e00-\u9fffA-Za-z0-9_·]{2,20}?)(?:并|同时|包括|包含|$)",
+        command,
+    )
+    if rename_match and any(marker in command for marker in ("改名", "重命名", "改成", "改为", "换成")):
+        old_name = rename_match.group("old").strip()
+        new_name = rename_match.group("new").strip()
+        if old_name and new_name:
+            return {
+                "action": "rename_character",
+                "params": {"old_name": old_name, "new_name": new_name},
+            }
+
+    if (
+        "最终安全修复" in command
+        or "终检安全修复" in command
+        or "安全修复全书" in command
+        or "全书安全修复" in command
+        or "安全终检" in command
+        or "最终终检" in command
+        or (
+            "硬逻辑" in command
+            and any(marker in command for marker in ("全书", "跨章", "终检", "安全修复"))
+        )
+    ):
+        return {"action": "final_safe_repair", "params": {"all": True}}
+
+    if (
+        "完稿流程" in command
+        or "定稿流程" in command
+        or "终稿流程" in command
+        or ("最终" in command and "定稿" in command)
+        or ("完稿" in command and "全书" in command)
+    ):
+        return {"action": "finalize_book", "params": {"all": True}}
+
+    if (
+        "无人值守" in command
+        or "全流程自动" in command
+        or "自动跑完整本" in command
+        or "自动写完整本" in command
+        or "一口气跑出最终" in command
+        or "一口气写完整本" in command
+        or ("一口气" in command and "精修稿" in command)
+        or ("自动" in command and "精修稿" in command)
+    ):
+        auto_params = {}
+        target_match = re.search(rf"(?:写到|跑到|到|目标|共)第?{num_pattern}章", command)
+        if target_match:
+            target = _parse_int_text(target_match.group(1))
+            if target:
+                auto_params["target"] = target
+        return {"action": "auto_run_book", "params": auto_params}
+
+    if (
+        "终稿精修" in command
+        or "最终精修" in command
+        or "完稿精修" in command
+        or "定稿精修" in command
+        or "最后精修" in command
+        or ("精修" in command and any(marker in command for marker in ("终稿", "完稿", "定稿", "最后")))
+    ):
+        return {"action": "final_polish", "params": {"all": True}}
+
+    if command in {"审查最新", "检查最新", "审核最新", "审查最新一章", "检查最新一章"}:
+        return {"action": "review_latest", "params": {}}
+
+    match = re.fullmatch(rf"(?:审查|检查|审核)第{num_pattern}章", command)
+    if match:
+        chapter = _parse_int_text(match.group(1))
+        if chapter:
+            return {"action": "review_chapter", "params": {"chapter": chapter}}
+
+    match = re.fullmatch(rf"(?:继续)?(?:修复|自动修复|按审查报告修复|修复阻断问题)第{num_pattern}章.*", command)
+    if match:
+        chapter = _parse_int_text(match.group(1))
+        if chapter:
+            return {"action": "repair_chapter", "params": {"chapter": chapter}}
+
+    match = re.fullmatch(rf"(?:查看|显示|读取|打开)第{num_pattern}章", command)
+    if match:
+        chapter = _parse_int_text(match.group(1))
+        if chapter:
+            return {"action": "show_chapter", "params": {"chapter": chapter}}
+
+    if command in {"精修全部", "润色全部", "精修全书", "润色全书"}:
+        return {"action": "polish_chapter", "params": {"all": True}}
+
+    match = re.fullmatch(rf"(?:精修|润色)第{num_pattern}章", command)
+    if match:
+        chapter = _parse_int_text(match.group(1))
+        if chapter:
+            return {"action": "polish_chapter", "params": {"chapter": chapter}}
+
+    return None
+
+
+def _action_ack(action: dict) -> str:
+    """Human-readable acknowledgement for deterministic actions."""
+    name = action.get("action", "")
+    params = action.get("params", {})
+    if name == "write_next":
+        return "收到，开始写下一章，并保存到正文目录。"
+    if name == "write_chapter":
+        return f"收到，开始写第{params.get('chapter', 1)}章，并保存到正文目录。"
+    if name == "write_batch":
+        return f"收到，连续写{params.get('count', 1)}章，每章都会走写作流水线并落盘。"
+    if name == "show_status":
+        return "收到，查看当前项目状态。"
+    if name == "show_outline":
+        return "收到，查看当前大纲。"
+    if name == "reverse_outline":
+        return "收到，从已写章节反推大纲。"
+    if name == "review_latest":
+        return "收到，审查最新一章。"
+    if name == "review_chapter":
+        return f"收到，审查第{params.get('chapter', 1)}章。"
+    if name == "repair_chapter":
+        return f"收到，按审查报告修复第{params.get('chapter', 1)}章。"
+    if name == "final_safe_repair":
+        return "收到，执行全书最终安全修复：只做可验证的小补丁，不整章重写。"
+    if name == "final_polish":
+        return "收到，执行终稿精修：只修出戏表达和衔接薄点，不整章重写。"
+    if name == "finalize_book":
+        return "收到，执行完稿流程：先终检安全修复，再做终稿精修。"
+    if name == "rename_character":
+        return f"收到，受控执行角色改名：{params.get('old_name', '')} -> {params.get('new_name', '')}。"
+    if name == "auto_run_book":
+        return "收到，开始无人值守全流程：写到目标章数，自动修复候选稿，最后产出终稿精修稿。"
+    if name == "show_chapter":
+        return f"收到，查看第{params.get('chapter', 1)}章。"
+    if name == "polish_chapter":
+        if params.get("all"):
+            return "收到，精修全部章节。"
+        return f"收到，精修第{params.get('chapter', 1)}章。"
+    if name == "export_book":
+        formats = params.get("formats") or params.get("format") or "epub"
+        if isinstance(formats, str):
+            format_text = formats
+        else:
+            format_text = "、".join(str(fmt) for fmt in formats)
+        return f"收到，导出全书为单个 {format_text} 文件。"
+    return "收到，开始执行。"
+
+
 def _truncate_messages(messages: list[dict[str, str]], max_history: int = _MAX_HISTORY) -> list[dict[str, str]]:
     """Keep system prompt + last max_history messages."""
     if len(messages) <= max_history + 1:
@@ -255,6 +618,7 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
 
         from aznovel.utils.rich_ui import info
         success_count = 0
+        failed_chapter = None
         for i in range(count):
             ch = start + i
             info(f"\n{'='*40}")
@@ -266,11 +630,17 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
             else:
                 from aznovel.utils.rich_ui import error
                 error(f"第{ch:03d}章写作失败，停止批量写作。")
+                failed_chapter = ch
                 break
 
-        from aznovel.utils.rich_ui import success
-        success(f"\n批量写作完成！成功 {success_count}/{count} 章。")
-        return success_count > 0
+        if failed_chapter is None:
+            from aznovel.utils.rich_ui import success
+            success(f"\n批量写作完成！成功 {success_count}/{count} 章。")
+            return True
+
+        from aznovel.utils.rich_ui import warn
+        warn(f"\n批量写作已中断：成功 {success_count}/{count} 章，停在第{failed_chapter:03d}章。")
+        return False
 
     elif name == "review_chapter":
         chapter = params.get("chapter", 1)
@@ -285,6 +655,94 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
             return False
         last = extract_chapter_number(existing[-1].name) or 1
         return await _run_review_inner(provider, root, last)
+
+    elif name == "repair_chapter":
+        from aznovel.core.pipeline import WritingPipeline
+
+        chapter = params.get("chapter", 0)
+        if not chapter:
+            from aznovel.utils.rich_ui import warn
+            warn("请指定要修复的章节号。")
+            return False
+
+        pipeline = WritingPipeline(provider, root, word_target=word_target)
+        return await pipeline.repair_chapter(
+            chapter, mode=write_mode, on_step=_on_step
+        )
+
+    elif name == "final_safe_repair":
+        from aznovel.core.pipeline import WritingPipeline
+
+        pipeline = WritingPipeline(provider, root, word_target=word_target)
+        chapters = params.get("chapters")
+        if params.get("all"):
+            chapters = None
+        return await pipeline.final_safe_repair(
+            chapters=chapters,
+            dry_run=bool(params.get("dry_run", False)),
+            on_step=_on_step,
+        )
+
+    elif name == "final_polish":
+        from aznovel.core.pipeline import WritingPipeline
+
+        pipeline = WritingPipeline(provider, root, word_target=word_target)
+        chapters = params.get("chapters")
+        if params.get("all"):
+            chapters = None
+        return await pipeline.final_polish(
+            chapters=chapters,
+            dry_run=bool(params.get("dry_run", False)),
+            on_step=_on_step,
+        )
+
+    elif name == "finalize_book":
+        from aznovel.core.pipeline import WritingPipeline
+
+        pipeline = WritingPipeline(provider, root, word_target=word_target)
+        ok_safe = await pipeline.final_safe_repair(
+            dry_run=bool(params.get("dry_run", False)),
+            on_step=_on_step,
+        )
+        if not ok_safe:
+            return False
+        return await pipeline.final_polish(
+            dry_run=bool(params.get("dry_run", False)),
+            on_step=_on_step,
+        )
+
+    elif name == "auto_run_book":
+        from aznovel.core.pipeline import WritingPipeline
+        from aznovel.utils.rich_ui import warn
+
+        if write_mode != "default":
+            warn("无人值守全流程会强制使用 default 正常审查，不继承 fast/minimal 模式。")
+
+        pipeline = WritingPipeline(provider, root, word_target=word_target)
+        return await pipeline.auto_run_book(
+            target=params.get("target"),
+            max_repair_attempts=params.get("max_repair_attempts", 2),
+            on_step=_on_step,
+        )
+
+    elif name == "rename_character":
+        from aznovel.core.renamer import rename_character
+        from aznovel.utils.rich_ui import warn
+
+        old_name = params.get("old_name") or params.get("from") or params.get("old")
+        new_name = params.get("new_name") or params.get("to") or params.get("new")
+        if not old_name or not new_name:
+            warn("角色改名需要提供 old_name 和 new_name。")
+            return False
+        return await rename_character(
+            provider,
+            root,
+            old_name=str(old_name),
+            new_name=str(new_name),
+            aliases=params.get("aliases"),
+            dry_run=bool(params.get("dry_run", False)),
+            on_step=_on_step,
+        )
 
     elif name == "update_setting":
         file = params.get("file", "")
@@ -641,6 +1099,13 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
         info(f"精修完成！修改了 {success_count}/{len(target_chapters)} 章。")
         return success_count > 0
 
+    elif name == "export_book":
+        from aznovel.cli.export_cmd import _run_export_inner
+
+        formats = params.get("formats") or params.get("format") or "epub"
+        output = params.get("output")
+        return _run_export_inner(root, formats=formats, output=output)
+
     return False
 
 
@@ -759,27 +1224,34 @@ async def chat_loop(provider: LLMProvider, root: Path, write_mode: str = "defaul
                 console.print("再见！")
                 break
 
-            # Detect file paths and read content
-            user_input = _inject_file_contents(user_input, root)
+            action = _deterministic_action_from_input(user_input)
+            if action:
+                messages.append({"role": "user", "content": user_input})
+                text_part = _action_ack(action)
+                reply = (
+                    f"{text_part}\n"
+                    f"===ACTION==={json.dumps(action, ensure_ascii=False)}===ACTION_END==="
+                )
+                messages.append({"role": "assistant", "content": reply})
+            else:
+                # Detect file paths and read content
+                user_input = _inject_file_contents(user_input, root)
 
-            messages.append({"role": "user", "content": user_input})
+                messages.append({"role": "user", "content": user_input})
 
-            # Get LLM response with spinner
-            try:
-                with console.status("[dim]思考中...[/]", spinner="dots"):
-                    resp = await provider.chat(messages, temperature=0.5, max_tokens=2048)
-            except Exception as e:
-                from aznovel.utils.rich_ui import error
-                error(f"LLM 调用失败: {e}")
-                # Remove the failed user message
-                messages.pop()
-                continue
+                # Get LLM response with timer spinner
+                try:
+                    reply = await _chat_with_timer(provider, messages, temperature=0.5, max_tokens=2048)
+                except Exception as e:
+                    from aznovel.utils.rich_ui import error
+                    error(f"LLM 调用失败: {e}")
+                    # Remove the failed user message
+                    messages.pop()
+                    continue
+                messages.append({"role": "assistant", "content": reply})
 
-            reply = resp.content
-            messages.append({"role": "assistant", "content": reply})
-
-            # Parse action
-            action = _parse_action(reply)
+                # Parse action
+                action = _parse_action(reply)
 
             # Print the text part (before ===ACTION===)
             text_part = reply.split("===ACTION===")[0].strip() if "===ACTION===" in reply else reply
@@ -835,9 +1307,10 @@ async def chat_loop(provider: LLMProvider, root: Path, write_mode: str = "defaul
                     })
 
                     try:
-                        with console.status("[dim]总结中...[/]", spinner="dots"):
-                            resp2 = await provider.chat(messages, temperature=0.3, max_tokens=512)
-                        messages.append({"role": "assistant", "content": resp2.content})
+                        summary = await _chat_with_timer(
+                            provider, messages, temperature=0.3, max_tokens=512, label="总结中"
+                        )
+                        messages.append({"role": "assistant", "content": summary})
                     except Exception as e:
                         logger.warning(f"Post-action summary failed: {e}")
 

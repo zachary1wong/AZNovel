@@ -14,7 +14,19 @@ from aznovel.llm.provider_factory import create_provider
 from aznovel.models.contract import ReviewContract
 from aznovel.storage import project_fs
 from aznovel.storage.project_fs import require_project_root
-from aznovel.utils.rich_ui import console, error, success
+from aznovel.utils.rich_ui import console, error, success, warn
+
+
+def _safe_print_report(report: str, report_path: Path) -> None:
+    """Print a review report without failing the review action on terminal I/O."""
+    try:
+        console.print(report)
+    except (BlockingIOError, OSError) as exc:
+        try:
+            warn(f"审查报告已保存，但终端输出失败: {exc}")
+            console.print(f"[dim]报告路径: {report_path}[/]")
+        except (BlockingIOError, OSError):
+            pass
 
 
 async def _run_review_inner(provider: LLMProvider, root: Path, chapter: int) -> bool:
@@ -44,9 +56,10 @@ async def _run_review_inner(provider: LLMProvider, root: Path, chapter: int) -> 
     report = format_review_report(result)
 
     report_path = paths["reviews_dir"] / f"chapter_{chapter:03d}_review.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
 
-    console.print(report)
+    _safe_print_report(report, report_path)
 
     if result.passed:
         success("审查通过！")

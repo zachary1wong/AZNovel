@@ -108,7 +108,28 @@ aznovel polish --all
 aznovel polish --chapter 3 --careful
 ```
 
-### 5. 对话模式
+### 5. 导出全书
+
+将所有已写章节合并导出为单个文件，默认输出到 `导出/`：
+
+```bash
+# 导出 EPUB
+aznovel export --format epub
+
+# 一次导出多个格式
+aznovel export --format epub,pdf,docx
+
+# 导出全部支持格式
+aznovel export --format all
+
+# 指定输出目录或单格式输出文件
+aznovel export --format docx --output dist
+aznovel export --format pdf --output dist/我的小说.pdf
+```
+
+支持格式：`epub`、`pdf`、`docx`、`mobi`。MOBI 导出需要本机安装 Calibre 的 `ebook-convert` 或 Amazon `kindlegen`。
+
+### 6. 对话模式
 
 进入AI对话模式，用自然语言操作：
 
@@ -127,12 +148,13 @@ aznovel chat
 你 > 重写第2章，把开头改得更吸引人
 你 > 精修第5章
 你 > 反推大纲
+你 > 导出全书为 epub，pdf，docx
 你 > 生成大纲，加入一个反派角色
 你 > 修改大纲，第3章要加入一场战斗
 你 > 更新设定，主角境界提升到筑基
 ```
 
-对话模式支持14种操作：
+对话模式支持17种操作：
 | 操作 | 说明 |
 |------|------|
 | `write_next` | 写下一章 |
@@ -140,6 +162,7 @@ aznovel chat
 | `write_batch` | 连续写多章 |
 | `review_chapter` | 审查指定章节 |
 | `review_latest` | 审查最新一章 |
+| `repair_chapter` | 按审查报告局部修复章节 |
 | `show_status` | 显示项目状态 |
 | `show_chapter` | 查看章节内容 |
 | `update_setting` | 更新设定文件 |
@@ -149,8 +172,10 @@ aznovel chat
 | `rewrite_chapter` | 重写章节 |
 | `reverse_outline` | 反推大纲 |
 | `polish_chapter` | 精修章节 |
+| `final_safe_repair` | 终检安全修复全书硬逻辑问题 |
+| `export_book` | 导出全书为单个文件 |
 
-### 6. 反推大纲
+### 7. 反推大纲
 
 从已写章节反向生成大纲，不覆盖原大纲：
 
@@ -158,7 +183,7 @@ aznovel chat
 aznovel reverse-outline
 ```
 
-### 7. 需求驱动大纲生成
+### 8. 需求驱动大纲生成
 
 在对话模式中，可以指定创作需求让AI严格按需求生成大纲：
 
@@ -170,7 +195,7 @@ aznovel reverse-outline
 
 AI会将用户需求标记为最高优先级，大纲的每一卷都有完整的逐章明细。
 
-### 8. 无参数启动
+### 9. 无参数启动
 
 ```bash
 # 在项目目录内：自动进入对话模式
@@ -288,6 +313,18 @@ aznovel reverse-outline [-p <配置名>]
 
 从已写章节反推大纲，方便检阅整本书结构。不会覆盖原大纲。
 
+### export - 导出全书
+
+```bash
+aznovel export [-f epub|pdf|mobi|docx|all] [-o 输出文件或目录]
+```
+
+选项：
+- `-f, --format`：导出格式，可用逗号分隔多个格式，默认 `epub`
+- `-o, --output`：输出文件或目录；多格式导出时必须指定目录
+
+默认导出到 `导出/<小说标题>.<格式>`。MOBI 需要本机安装 `ebook-convert` 或 `kindlegen`。
+
 ### chat - 对话模式
 
 ```bash
@@ -376,6 +413,7 @@ my-novel/
 ├── 设定集/            # 世界观、人物设定
 ├── 大纲/              # 故事大纲
 ├── 正文/              # 章节正文
+├── 导出/              # 全书导出文件
 └── 审查报告/          # 审查报告
 ```
 

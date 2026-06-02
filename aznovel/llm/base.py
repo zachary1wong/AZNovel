@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
 
 @dataclass
@@ -23,6 +23,15 @@ class LLMResponse:
     usage: TokenUsage | None = None
     raw: dict | None = None
     tool_calls: list[ToolCall] | None = None
+
+
+@dataclass
+class StreamChunk:
+    """A single chunk from a streaming LLM response."""
+
+    delta: str  # Incremental text content
+    model: str = ""
+    finish_reason: str | None = None
 
 
 @dataclass
@@ -63,6 +72,16 @@ class LLMProvider(Protocol):
         tools: list[dict] | None = None,
     ) -> LLMResponse:
         """Send a chat completion request and return plain text."""
+        ...
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Send a chat completion request and stream chunks incrementally."""
         ...
 
     async def chat_json(

@@ -58,6 +58,28 @@ def _execute_tool(name: str, arguments: dict) -> str:
     return f"错误：未知工具 {name}"
 
 
+def _looks_like_init_drafting_request(user_input: str) -> bool:
+    """Detect direct chapter-writing commands during project initialization."""
+    compact = re.sub(r"[\s，。！？!?,.、：:；;]+", "", user_input.strip()).lower()
+    if not compact:
+        return False
+    if compact in {
+        "继续",
+        "继续写",
+        "续写",
+        "下一章",
+        "写下一章",
+        "写下章",
+        "开始写",
+        "开始写作",
+        "开写",
+        "continue",
+        "go",
+    }:
+        return True
+    return bool(re.search(r"(?:写|创作|生成|续写)第(?:[0-9]+|[一二两三四五六七八九十]{1,3})章", compact))
+
+
 # ── Phase 1: Parameter Collection ──────────────────────────────────────────
 
 _COLLECT_SYSTEM_PROMPT = """你是一个专业的创作顾问，正在帮用户构思一部新作品。
@@ -88,6 +110,7 @@ _COLLECT_SYSTEM_PROMPT = """你是一个专业的创作顾问，正在帮用户�
 - 用轻松自然的中文交流，像朋友聊天一样
 - **第一个问题必须问：你想写什么类型？网文、文学还是短剧？**
 - 每次只问1-2个问题，不要一次性问太多
+- 当前阶段只负责初始化项目，绝对不要直接输出小说正文或续写章节；如果用户要求“继续”“写第N章”“写下一章”，提醒他先完成项目初始化
 - 根据用户的回答追问细节，帮助他们完善想法
 - 如果用户说"随便"或"你定"，给出合理的建议
 - 如果用户选择文学类，不要问金手指相关问题
@@ -151,10 +174,29 @@ async def _conversational_collect(provider, progress_tracker=None) -> dict | Non
 
         messages.append({"role": "user", "content": user_input})
 
+        if _looks_like_init_drafting_request(user_input):
+            reply = (
+                "现在还在项目初始化阶段，项目目录里还没有 `.aznovel`、大纲、设定集和正文目录，"
+                "所以我不能直接续写正文。\n\n"
+                "我们先把作品类型、标题、主角、核心卖点、总字数和每章字数确认完；"
+                "初始化成功后，在项目 chat 里输入“继续”就会走写作流水线并保存成章节文件。"
+            )
+            messages.append({"role": "assistant", "content": reply})
+            console.print(f"\n[bold cyan]🤖 AZNovel 创作顾问[/]\n")
+            console.print(reply)
+            console.print()
+            continue
+
         # LLM call with tool support - loop until no more tool calls
         reply = ""
         for _tool_round in range(5):  # max 5 tool call rounds per turn
-            resp = await provider.chat(messages, temperature=0.7, max_tokens=2048, tools=_TOOLS)
+            from aznovel.cli.chat_cmd import TimerSpinner
+            spinner = TimerSpinner(label="思考中")
+            spinner.start()
+            try:
+                resp = await provider.chat(messages, temperature=0.7, max_tokens=2048, tools=_TOOLS)
+            finally:
+                spinner.stop()
 
             # Handle tool calls
             if resp.tool_calls:

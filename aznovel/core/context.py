@@ -182,6 +182,10 @@ def _build_writing_guidance(master: MasterSetting, brief: ChapterBrief, state: P
         lines.append("- 避免拖沓的场景描述")
         lines.append("- 避免冗长的内心独白")
 
+    lines.append("\n**剧情执行硬规则**:")
+    lines.append("- 大纲指定的关键事件、结尾事件、公开事件必须在当前章节中直接发生；除非大纲明确要求，否则不要只用新闻推送、录像、回忆、传闻或他人口述替代现场事件")
+    lines.append("- 贫困、断粮、配给制、封锁等资源约束必须数量闭环；食物、药品、燃料等关键物资不能凭空变多，角色消耗或偷取的每一份都要有来源、代价和风险")
+
     if brief.anti_patterns:
         lines.append("\n**本文禁忌**:")
         for ap in brief.anti_patterns:

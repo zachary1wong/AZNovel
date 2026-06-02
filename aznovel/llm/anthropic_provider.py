@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import AsyncIterator
 
 import anthropic
 
-from aznovel.llm.base import LLMConfig, LLMResponse, TokenUsage, ToolCall
+from aznovel.llm.base import LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,34 @@ class AnthropicProvider:
         resp = await self.chat(modified, temperature=temperature, max_tokens=max_tokens)
         text = resp.content.strip()
         return self._parse_json(text)
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream chat completion chunks incrementally."""
+        system_text, chat_messages = self._extract_system(messages)
+
+        kwargs: dict = {
+            "model": self.config.model,
+            "system": system_text,
+            "messages": chat_messages,
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "max_tokens": max_tokens or self.config.max_tokens,
+            "timeout": self.config.timeout,
+        }
+
+        model_name = self.config.model
+        with self._client.messages.stream(**kwargs) as stream:
+            for text in stream.text_stream:
+                yield StreamChunk(delta=text, model=model_name)
+            # Get final message for model name
+            final_msg = stream.get_final_message()
+            model_name = final_msg.model
+            yield StreamChunk(delta="", model=model_name, finish_reason="end_turn")
 
     async def close(self) -> None:
         await self._client.close()

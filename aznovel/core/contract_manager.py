@@ -109,11 +109,34 @@ class ContractManager:
         chapter_brief: ChapterBrief | None = None,
     ) -> ReviewContract:
         """Generate ReviewContract for a chapter."""
+        protagonist_facts = []
+        if state.protagonist.name:
+            fact = f"主角是{state.protagonist.name}"
+            if state.protagonist.cultivation:
+                fact += f"，身份/状态：{state.protagonist.cultivation}"
+            if state.protagonist.current_goal:
+                fact += f"，当前目标：{state.protagonist.current_goal}"
+            protagonist_facts.append(fact)
+
         return ReviewContract(
             chapter_number=chapter,
-            known_entities=[e.name for e in state.entities],
-            established_rules=master.world_rules,
+            known_entities=_unique_nonempty(
+                [state.protagonist.name] + [e.name for e in state.entities]
+            ),
+            established_rules=master.world_rules + protagonist_facts,
             blocking_keywords=["[待填]", "[TODO]", "placeholder"],
             must_cover=chapter_brief.must_cover if chapter_brief else [],
             outline_summary=chapter_brief.summary if chapter_brief else "",
         )
+
+
+def _unique_nonempty(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        value = item.strip() if item else ""
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

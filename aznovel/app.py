@@ -220,6 +220,237 @@ def polish(
     run_polish(chapter=chapter, start=start, end=end, all_chapters=all_chapters, careful=careful, profile_name=profile)
 
 
+@app.command("safe-repair")
+def safe_repair_cmd(
+    chapters: str = typer.Option(None, "--chapters", "-c", help="章节列表，例如 6,8,10；不填则全书"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只生成候选和报告，不覆盖正文"),
+    profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
+):
+    """执行最终安全修复：跨章节终检硬逻辑，只应用小补丁。"""
+    from aznovel.cli.chat_cmd import _run_action
+    from aznovel.cli.config_cmd import build_llm_config
+    from aznovel.llm.provider_factory import create_provider
+    from aznovel.storage.project_fs import require_project_root
+
+    root = require_project_root()
+    llm_config = build_llm_config(profile)
+    provider = create_provider(llm_config)
+
+    parsed_chapters = None
+    if chapters:
+        parsed_chapters = []
+        for part in chapters.replace("，", ",").split(","):
+            part = part.strip()
+            if part:
+                parsed_chapters.append(int(part))
+
+    params = {"dry_run": dry_run}
+    if parsed_chapters:
+        params["chapters"] = parsed_chapters
+    else:
+        params["all"] = True
+
+    async def _run():
+        try:
+            return await _run_action(
+                {"action": "final_safe_repair", "params": params},
+                provider,
+                root,
+            )
+        finally:
+            await provider.close()
+
+    try:
+        result = asyncio.run(_run())
+        if not result:
+            raise typer.Exit(1)
+    except Exception as e:
+        from aznovel.utils.rich_ui import error
+        error(f"最终安全修复失败: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("final-polish")
+def final_polish_cmd(
+    chapters: str = typer.Option(None, "--chapters", "-c", help="章节列表，例如 7,8,10；不填则全书"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只生成候选和报告，不覆盖正文"),
+    profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
+):
+    """执行终稿精修：只修出戏表达、薄弱过桥和小型文字瑕疵。"""
+    from aznovel.cli.chat_cmd import _run_action
+    from aznovel.cli.config_cmd import build_llm_config
+    from aznovel.llm.provider_factory import create_provider
+    from aznovel.storage.project_fs import require_project_root
+
+    root = require_project_root()
+    llm_config = build_llm_config(profile)
+    provider = create_provider(llm_config)
+
+    parsed_chapters = None
+    if chapters:
+        parsed_chapters = []
+        for part in chapters.replace("，", ",").split(","):
+            part = part.strip()
+            if part:
+                parsed_chapters.append(int(part))
+
+    params = {"dry_run": dry_run}
+    if parsed_chapters:
+        params["chapters"] = parsed_chapters
+    else:
+        params["all"] = True
+
+    async def _run():
+        try:
+            return await _run_action(
+                {"action": "final_polish", "params": params},
+                provider,
+                root,
+            )
+        finally:
+            await provider.close()
+
+    try:
+        result = asyncio.run(_run())
+        if not result:
+            raise typer.Exit(1)
+    except Exception as e:
+        from aznovel.utils.rich_ui import error
+        error(f"终稿精修失败: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("finalize")
+def finalize_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="只生成候选和报告，不覆盖正文"),
+    profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
+):
+    """执行完稿流程：最终安全修复后，再做终稿精修。"""
+    from aznovel.cli.chat_cmd import _run_action
+    from aznovel.cli.config_cmd import build_llm_config
+    from aznovel.llm.provider_factory import create_provider
+    from aznovel.storage.project_fs import require_project_root
+
+    root = require_project_root()
+    llm_config = build_llm_config(profile)
+    provider = create_provider(llm_config)
+
+    async def _run():
+        try:
+            return await _run_action(
+                {"action": "finalize_book", "params": {"all": True, "dry_run": dry_run}},
+                provider,
+                root,
+            )
+        finally:
+            await provider.close()
+
+    try:
+        result = asyncio.run(_run())
+        if not result:
+            raise typer.Exit(1)
+    except Exception as e:
+        from aznovel.utils.rich_ui import error
+        error(f"完稿流程失败: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("rename-character")
+def rename_character_cmd(
+    old_name: str = typer.Option(..., "--from", "-f", help="旧角色名"),
+    new_name: str = typer.Option(..., "--to", "-t", help="新角色名"),
+    aliases: str = typer.Option(None, "--aliases", "-a", help="称谓映射，例如：小禾=小森,禾禾=森森"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只生成候选和报告，不覆盖项目文件"),
+    profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
+):
+    """受控角色改名：同步正文、大纲、设定、状态、契约和审查报告中的小名/昵称。"""
+    from aznovel.cli.chat_cmd import _run_action
+    from aznovel.cli.config_cmd import build_llm_config
+    from aznovel.llm.provider_factory import create_provider
+    from aznovel.storage.project_fs import require_project_root
+
+    root = require_project_root()
+    llm_config = build_llm_config(profile)
+    provider = create_provider(llm_config)
+
+    async def _run():
+        try:
+            return await _run_action(
+                {
+                    "action": "rename_character",
+                    "params": {
+                        "old_name": old_name,
+                        "new_name": new_name,
+                        "aliases": aliases,
+                        "dry_run": dry_run,
+                    },
+                },
+                provider,
+                root,
+            )
+        finally:
+            await provider.close()
+
+    try:
+        result = asyncio.run(_run())
+        if not result:
+            raise typer.Exit(1)
+    except Exception as e:
+        from aznovel.utils.rich_ui import error
+        error(f"角色改名失败: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("auto-run")
+def auto_run_cmd(
+    target: int = typer.Option(None, "--target", "-t", help="目标章数；不填则使用项目 target_chapters"),
+    max_repair_attempts: int = typer.Option(2, "--max-repair-attempts", help="每章候选稿自动修复次数"),
+    profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
+):
+    """无人值守全流程：补写到目标章数，自动修复候选稿，最后终检和终稿精修。"""
+    from aznovel.cli.chat_cmd import _run_action
+    from aznovel.cli.config_cmd import build_llm_config
+    from aznovel.llm.provider_factory import create_provider
+    from aznovel.storage.project_fs import require_project_root
+
+    root = require_project_root()
+    llm_config = build_llm_config(profile)
+    provider = create_provider(llm_config)
+
+    params = {"max_repair_attempts": max_repair_attempts}
+    if target:
+        params["target"] = target
+
+    async def _run():
+        try:
+            return await _run_action(
+                {"action": "auto_run_book", "params": params},
+                provider,
+                root,
+            )
+        finally:
+            await provider.close()
+
+    try:
+        result = asyncio.run(_run())
+        if not result:
+            raise typer.Exit(1)
+    except Exception as e:
+        from aznovel.utils.rich_ui import error
+        error(f"无人值守全流程失败: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("export")
+def export_cmd(
+    formats: str = typer.Option("epub", "--format", "-f", help="导出格式：epub/pdf/mobi/docx/all，可用逗号分隔多个格式"),
+    output: str = typer.Option(None, "--output", "-o", help="输出文件或目录；多格式导出时必须是目录"),
+):
+    """导出全书为单个文件。"""
+    from aznovel.cli.export_cmd import run_export
+    run_export(formats=formats, output=output)
+
+
 @app.command()
 def status():
     """显示项目状态。"""

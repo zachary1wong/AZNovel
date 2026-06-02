@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI
 
-from aznovel.llm.base import LLMConfig, LLMResponse, TokenUsage
+from aznovel.llm.base import LLMConfig, LLMResponse, StreamChunk, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,40 @@ class OpenAIProvider:
         resp = await self.chat(modified, temperature=temperature, max_tokens=max_tokens)
         text = resp.content.strip()
         return self._parse_json(text)
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream chat completion chunks incrementally."""
+        kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": temperature if temperature is not None else self.config.temperature,
+            "max_tokens": max_tokens or self.config.max_tokens,
+            "timeout": self.config.timeout,
+            "stream": True,
+        }
+
+        resp = await self._client.chat.completions.create(**kwargs)
+        model_name = ""
+        async for chunk in resp:
+            if chunk.model:
+                model_name = chunk.model
+            if chunk.choices:
+                choice = chunk.choices[0]
+                delta = choice.delta
+                text = delta.content or ""
+                finish = choice.finish_reason
+                if text or finish:
+                    yield StreamChunk(
+                        delta=text,
+                        model=model_name,
+                        finish_reason=finish,
+                    )
 
     @staticmethod
     def _parse_json(text: str) -> dict:
