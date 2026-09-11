@@ -712,7 +712,7 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
         )
 
     elif name == "auto_run_book":
-        from aznovel.core.pipeline import WritingPipeline
+        from aznovel.core.pipeline import AUTO_RUN_REPAIR_ATTEMPTS_DEFAULT, WritingPipeline
         from aznovel.utils.rich_ui import warn
 
         if write_mode != "default":
@@ -721,7 +721,10 @@ async def _run_action(action: dict, provider: LLMProvider, root: Path, write_mod
         pipeline = WritingPipeline(provider, root, word_target=word_target)
         return await pipeline.auto_run_book(
             target=params.get("target"),
-            max_repair_attempts=params.get("max_repair_attempts", 2),
+            max_repair_attempts=params.get(
+                "max_repair_attempts",
+                AUTO_RUN_REPAIR_ATTEMPTS_DEFAULT,
+            ),
             on_step=_on_step,
         )
 

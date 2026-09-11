@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "project_info": {
+    "title": "灰色估值",
+    "genre": "mystery_lit",
+    "author": "",
+    "target_chapters": 8,
+    "chapters_per_volume": 10,
+    "created_at": "2026-06-02T18:45:56.481247"
+  },
+  "progress": {
+    "current_chapter": 0,
+    "total_chapters": 0,
+    "current_volume": 1,
+    "total_words": 0
+  },
+  "protagonist": {
+    "name": "沈砚",
+    "age": 0,
+    "cultivation": "前上市公司风控总监",
+    "location": "",
+    "mood": "",
+    "current_goal": "追查并购案真相，揭开财务造假、家族继承权斗争与十年前旧案，最终在商业伦理与个人复仇之间做出抉择",
+    "special_abilities": []
+  },
+  "plot_threads": [],
+  "entities": []
+}

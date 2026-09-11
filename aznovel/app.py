@@ -6,6 +6,7 @@ import asyncio
 
 import typer
 
+from aznovel.core.pipeline import AUTO_RUN_REPAIR_ATTEMPTS_DEFAULT
 from aznovel.utils.rich_ui import console
 
 app = typer.Typer(
@@ -404,7 +405,11 @@ def rename_character_cmd(
 @app.command("auto-run")
 def auto_run_cmd(
     target: int = typer.Option(None, "--target", "-t", help="目标章数；不填则使用项目 target_chapters"),
-    max_repair_attempts: int = typer.Option(2, "--max-repair-attempts", help="每章候选稿自动修复次数"),
+    max_repair_attempts: int = typer.Option(
+        AUTO_RUN_REPAIR_ATTEMPTS_DEFAULT,
+        "--max-repair-attempts",
+        help="每章候选稿自动修复次数",
+    ),
     profile: str = typer.Option(None, "--profile", "-p", help="LLM配置名称"),
 ):
     """无人值守全流程：补写到目标章数，自动修复候选稿，最后终检和终稿精修。"""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import json
 import logging
 import re
 from pathlib import Path
@@ -170,9 +171,57 @@ _LOCAL_PATCH_SYSTEM_PROMPT = """你是一个严谨的小说局部修复编辑。
   ]
 }"""
 
+_STRUCTURED_REPAIR_PLANNER_SYSTEM_PROMPT = """你是一个小说审查修复规划器。你的任务是把审查报告转成通用、可执行的小修复任务。
+
+规则：
+1. 只输出JSON，不要输出Markdown或解释
+2. 不要依赖固定题材关键词；必须从“大纲/契约、审查报告、正文段落”中概括违反的通用约束
+3. 优先处理 [BLOCKING]、critical、high 问题
+4. paragraph_indexes 只能填写下方“编号正文段落”中存在的段落编号
+5. 如果问题需要上下文才能修复，选择相邻的多个段落；不要选择整章
+6. required_fix 必须说明“应该如何改”，不是只复述问题
+7. success_criteria 必须是复审时可判断的具体条件
+
+输出JSON格式：
+{
+  "tasks": [
+    {
+      "issue_id": "I1",
+      "blocking": true,
+      "category": "setting|logic|outline|character|ai_flavor|other",
+      "violated_contract": "被违反的大纲、设定、人物或逻辑约束",
+      "evidence": ["审查报告中的关键证据或原文片段"],
+      "paragraph_indexes": [12, 13],
+      "required_fix": "对这些段落应如何局部修复",
+      "success_criteria": ["修复后必须满足的检查点"],
+      "risk_notes": ["容易新增的问题"]
+    }
+  ]
+}"""
+
+_STRUCTURED_TASK_PATCH_SYSTEM_PROMPT = """你是一个严谨的小说局部补丁编辑。你根据一个结构化修复任务生成可程序应用的 exact old/new 补丁。
+
+规则：
+1. 只输出JSON，不要输出Markdown或说明
+2. 每个 old 必须完整等于“允许替换的原文窗口”中的一个窗口，不能截断、拼接、改写或使用省略号
+3. new 只能修复当前 repair task，不要顺手改其他问题
+4. 保留原段落的叙事功能、人物关系、场景位置和章节节奏
+5. 不要整章重写；优先段落级或相邻段落级替换
+6. 若无法安全修复，返回空 edits
+
+输出JSON格式：
+{
+  "edits": [
+    {"old": "允许窗口中的完整原文", "new": "替换后的文本", "reason": "修复任务ID和理由"}
+  ]
+}"""
+
 _REWRITE_REVIEW_REPORT_MAX_CHARS = 16000
 _LOCAL_PATCH_REPORT_MAX_CHARS = 12000
 _LOCAL_PATCH_MAX_EDITS = 8
+_STRUCTURED_REPAIR_MAX_TASKS = 4
+_STRUCTURED_REPAIR_MAX_EDITS = 3
+_STRUCTURED_REPAIR_TEXT_MAX_CHARS = 18000
 _LOCAL_PATCH_SINGLE_BLOCKER_MAX_EDITS = 3
 _PATCH_REJECT_STREAK_LIMIT = 4
 _FOCUSED_PATCH_MAX_WINDOWS = 6
@@ -181,8 +230,10 @@ _FOCUSED_PATCH_SINGLE_BLOCKER_MAX_EDITS = 2
 _PATCH_REJECT_STREAK_LIMIT_SINGLE_BLOCKER = 3
 _FOCUSED_PATCH_REJECT_STREAK_LIMIT = 2
 _PATCH_GENERATION_TIMEOUT = 120.0
-_AUTO_REPAIR_MAX_ROUNDS = 3
+_AUTO_REPAIR_MAX_ROUNDS = 6
+AUTO_RUN_REPAIR_ATTEMPTS_DEFAULT = 5
 _FULL_POLISH_MIN_BLOCKERS = 2
+_REPAIR_SAME_BLOCKER_RISK_TOLERANCE = 25
 _FINAL_SAFE_REPAIR_MAX_CHANGE_RATIO = 0.12
 _FINAL_SAFE_REPAIR_MAX_CHANGE_CHARS = 1000
 
@@ -324,6 +375,7 @@ class WritingPipeline:
         # Step 6: Save chapter file
         _step("Step 6: 保存章节...")
         self._save_chapter(chapter, title, chapter_text)
+        self._clear_candidate(chapter)
 
         if commit.status == "accepted":
             success(f"第{chapter:03d}章写作完成！")
@@ -367,37 +419,25 @@ class WritingPipeline:
         return resp.content.strip()
 
     def _repair_strategy_notes(self, review_report: str) -> list[str]:
-        """Derive concrete repair tactics for recurring review failure patterns."""
+        """Derive cross-genre tactics from recurring review failure patterns."""
         notes: list[str] = []
-        if re.search(r"(新闻|推送|报道|监控录像|录像|转述|间接)", review_report) and re.search(
-            r"(大纲|直接|现场|发生|公开攻击|吞噬|结尾)", review_report
+        if re.search(r"(新闻|推送|报道|录像|回忆|转述|间接|口述)", review_report) and re.search(
+            r"(大纲|直接|现场|发生|呈现|亲历|结尾)", review_report
         ):
             notes.append(
-                "大纲指定的关键/结尾事件不能只通过新闻、手机推送、录像、回忆或他人口述完成；必须改成当前叙事时空里的直接场景，让主角或场景人物现场目睹、卷入或被迫应对。"
+                "大纲指定的关键事件不能只通过新闻、推送、录像、回忆或他人口述完成；必须改成当前叙事时空里的直接场景，让角色现场目睹、卷入或被迫应对。"
             )
-        if re.search(r"(配给|贫困|断粮|存量|两份|更多|资源|经济状况|不可能有如此充足)", review_report):
+        if re.search(r"(资源|存量|数量|预算|配给|贫困|断粮|库存|不可能|不足|过多)", review_report):
             notes.append(
-                "资源稀缺或配给制冲突必须用数量闭环解决：删除凭空多出的食物/物资存量，明确只剩最后一份、半份或一小块；角色索要更多可来自感染冲动、气味诱导或幻听，但不要暗示家中仍有充足库存。"
-            )
-        if re.search(r"(刚刚进食|刚吃|压缩饼干|半块饼干|优质食物源|热量和营养)", review_report) and re.search(
-            r"(逻辑冲突|配给制|饥饿|生存常态|缺乏前文铺垫|被攻击|牺牲)", review_report
-        ):
-            notes.append(
-                "若审查指出用“刚进食/压缩饼干/优质食物源”解释被攻击会造成饥荒逻辑冲突，必须删除这条因果；把吸引禾苗/藤蔓的原因收回到正文已有的化学诱饵、营养液、有机氮、福尔马林、血液气味轨迹或角色主动引走，而不是让饥饿幸存者突然变成高营养目标。"
+                "资源、库存、时间、钱款或物资不足类冲突要用数量闭合解决：删除凭空增加的存量，明确来源、消耗和剩余，不要用新的解释扩大漏洞。"
             )
         if re.search(r"(AI味|ai_flavor|解释性|总结|归纳|破折号|比喻)", review_report):
             notes.append(
                 "若审查指出展示后解释、总结归纳或破折号式比喻有 AI 味，必须删掉结论性解释句，改为角色观察到的具体细节、动作、迟疑或选择，让读者从现场信息中自行得出结论。"
             )
-        if re.search(r"(身份|职业|财务|账目|单据|专业思维)", review_report):
+        if re.search(r"(身份|职业|专业|能力|设定|规则|边界|体系)", review_report):
             notes.append(
-                "若审查指出职业身份脱节，修复时要让角色用其既有职业习惯处理问题，例如核对数字、规避单据漏洞、预判追责链条，而不是只做粗糙动作。"
-            )
-        if re.search(r"(前财务|财务从业|财务)", review_report) and re.search(
-            r"(战术|战略|精确制导|军事|战术素养|专业判断|严重割裂)", review_report
-        ):
-            notes.append(
-                "若审查指出前财务从业者被写成军事/战术专家，必须删除战略、战术、精确制导、规避路线等军事化词汇；改为财务或普通人视角，例如重新核对一笔坏账、计算代价、看出高墙只是把人集中留在原地，行动上只写贴墙、绕开裂缝、听声停步等朴素求生反应。"
+                "若审查指出身份、职业、能力或世界观规则越界，必须先抽取报告里的限制条件，再把行为、信息来源和推理过程收回到该限制内。"
             )
         if re.search(r"(OOC|人物.*不符|惊恐|恐惧)", review_report) and re.search(
             r"(平静|没有尖叫|没有逃跑|不害怕)", review_report
@@ -409,64 +449,28 @@ class WritingPipeline:
             notes.append(
                 "若审查指出人物称谓前后不一致，必须以前文首次出现的名称为准统一全章称谓，不要创造相近的新名字。"
             )
-        if re.search(r"(喃喃自语|呓语)", review_report) and re.search(
-            r"(代码|机械|术语|碳基|载体|适配度|根须|超纲)", review_report
-        ):
+        if re.search(r"(提前|过早|节奏|结尾才|信息暴露|悬念)", review_report):
             notes.append(
-                "若审查指出喃喃自语被写成代码式术语，必须把台词改为含混、破碎、低声的人类语句；可以让角色对墙角、空气或某个看不见的对象说话，但不要使用碳基、载体、适配度、运算等科技术语。"
-            )
-        if re.search(r"(禾苗.*思考|思考)", review_report) and re.search(
-            r"(抽象|主观论述|解释|运算|直观|场景)", review_report
-        ):
-            notes.append(
-                "若审查指出“发现禾苗在思考”太抽象，必须删掉主观解释和设定说明，改为可被看见/听见的现场证据：例如孩子的喃喃自语与禾苗、根系、包装、墙内声音或远处绿光同步，让主角在具体场景中惊恐意识到禾苗有意识。"
-            )
-        if re.search(r"(吞噬|被吞噬)", review_report) and re.search(
-            r"(没有死|未.*消失|主动攻击|半活|不再是人类|偏离)", review_report
-        ):
-            notes.append(
-                "若大纲要求角色被禾苗吞噬，修复时必须让该角色在现场被吸收、消化、消失或只剩衣物/骨骼残留，失去自主行动能力；不要改成半活怪物、宿主反扑或战斗场面。"
-            )
-        if re.search(r"(变异程度|同化逻辑|丧失行动能力|自由行动|不可信|症状)", review_report) and re.search(
-            r"(周也|主角|成人|摄入量|接触|手背|荧光|青紫)", review_report
-        ):
-            notes.append(
-                "若审查指出主角感染程度与行动能力矛盾，必须把主角症状降级为早期、局部、间歇性反应：例如刺痛、细线、微弱发热或一闪即灭的荧光；明确其只是接触/少量暴露，不能写到与被吞噬者相同的全身同化程度。"
-            )
-        if re.search(r"(周小禾|儿子)", review_report) and re.search(
-            r"(提前|过早|节奏|结尾才|被标记|异变状态|同化|共鸣|它们|无恐惧|发光|瞳孔)",
-            review_report,
-        ):
-            notes.append(
-                "若审查指出儿子的异变/被标记暴露过早，必须把中段的明确同化、主动共鸣、发光瞳孔、非人台词和无恐惧表现降级为可疑但未定性的异常线索；直到大纲指定的结尾，周也才发现“被标记”的证据。"
+                "若审查指出信息暴露过早，必须把明确结论降级成可疑但未定性的线索；直到大纲指定节点再揭示结论。"
             )
         if re.search(r"(结尾|大纲|后续|提前|第[0-9一二三四五六七八九十]+章)", review_report) and re.search(
-            r"(包围|涌入|吞噬|牺牲|逃离|注射|解药|血清|抗性因子|合成|药效|五分钟|一个月|两个月)",
+            r"(越界|推进|已经发生|结局|后续|提前|完成|落定)",
             review_report,
         ):
             notes.append(
-                "若审查指出章节越界或结尾推进过头，必须把剧情收回到本章大纲指定的悬念点：例如大纲只要求“禾苗包围实验室”，就删除或改掉禾苗完全涌入、汪禾牺牲、主角逃离、现场注射见效、解药完成等后续章节事件。"
+                "若审查指出章节越界或结尾推进过头，必须把剧情收回到本章大纲指定的悬念点，删除或改写提前完成的后续事件。"
             )
-            notes.append(
-                "“包围”与“攻破/入侵”必须严格区分：包围可以写门外藤蔓、撞击、门板变形、荧光从门缝渗入；不能写气密门倒塌、藤蔓漫过门槛、切断室内退路、探到操作台或人物已被围在室内。"
-            )
-            notes.append(
-                "若审查指出解药/血清/抗性因子时间矛盾，不能让刚采集的血样在几分钟内合成新药；新血样只能作为后续研究的样本或希望，现成药剂只能是此前已制备的抑制剂，且不能在本章立刻验证药效。"
-            )
-            notes.append(
-                "若大纲只要求包围实验室，不要让唯一血样、配方或研究者在本章被彻底毁掉；希望应保持未完成、未验证、随时可能失去的悬念，而不是被物理终结。"
-            )
-        if re.search(r"(三小时|四小时|十五分钟|二十分钟|撑多久|防御时间)", review_report) and re.search(
-            r"(门|防爆门|金属门|撞击|攻破|时间)", review_report
+        if re.search(r"(时间|时长|几分钟|几小时|倒计时|来不及|撑多久)", review_report) and re.search(
+            r"(矛盾|冲突|不成立|过快|过慢|无法)", review_report
         ):
             notes.append(
-                "若审查指出门能撑数小时却很快被攻破，必须统一防御时间：要么把汪禾的预估改成“不知道能撑多久/也许只有几分钟”，要么让本章只停在门外包围与撞击，不写门被彻底攻破。"
+                "若审查指出时间线或耗时矛盾，必须统一时长、等待过程和结果触发条件；无法闭合时优先删掉过精确的时间承诺。"
             )
-        if re.search(r"(人物状态|求生与研究状态|研究解药|正在研究|状态)", review_report) and re.search(
+        if re.search(r"(人物状态|求生|工作|研究|任务|状态)", review_report) and re.search(
             r"(绝望|干呕|崩溃|瘫坐|放弃)", review_report
         ):
             notes.append(
-                "若审查指出人物状态偏离“正在研究/求生”的大纲要求，优先只替换证据句中的绝望、干呕、崩溃、放弃等词，改成压住恐惧后继续记录、翻找试剂、操作仪器或盯住数据的研究状态。"
+                "若审查指出人物状态偏离当前任务，优先替换证据句里的崩溃、放弃或过度情绪化动作，改为仍在执行任务但承受压力的可见行为。"
             )
         return notes
 
@@ -516,7 +520,7 @@ class WritingPipeline:
             "5. 如果报告指出事件呈现方式偏离大纲（例如写成回忆、录像、新闻转述而不是现场事件），必须把对应段落改成直接发生的场景。\n"
             "6. 如果报告指出流程、制度或手续无法闭环，不要继续添加复杂解释；优先删除造成漏洞的手续细节，改成更简单、可核验的因果链。\n"
             "7. 修复 AI 味时，用具体动作、物象、对话和感官细节替代抽象判断、排比推演和套路比喻。\n"
-            "8. 大纲或已知实体中出现的角色、组织、地点、物品名称必须精确保留；不要用“教授”“儿子”“公司”等泛称替代“汪禾”“周小禾”“绿源生命科学公司”等专名。\n"
+            "8. 大纲或已知实体中出现的角色、组织、地点、物品名称必须精确保留；不要用“教授”“儿子”“公司”等泛称替代具体专名。\n"
             "9. 如果问题是信息暴露节奏过早，必须删掉提前定性的词句，把它改成疑似线索或误判空间，不能用更多解释继续坐实。\n"
             "10. 如果问题是章节越界，必须删除或改写提前发生的后续章节事件，让本章停在大纲指定结尾，不要用解释补洞。\n"
             "11. 输出完整修复后的正文，是为了覆盖保存；但内容改动应尽量局部、克制。"
@@ -641,6 +645,274 @@ class WritingPipeline:
 
         return result, applied, errors
 
+    def _numbered_paragraphs(self, chapter_text: str) -> list[tuple[int, str]]:
+        """Split chapter text into stable 1-based paragraph numbers."""
+        paragraphs = [
+            part.strip()
+            for part in re.split(r"\n\s*\n", chapter_text)
+            if part.strip()
+        ]
+        return [(index, paragraph) for index, paragraph in enumerate(paragraphs, 1)]
+
+    def _format_numbered_paragraphs(
+        self,
+        paragraphs: list[tuple[int, str]],
+        *,
+        max_chars: int = _STRUCTURED_REPAIR_TEXT_MAX_CHARS,
+    ) -> str:
+        """Format numbered paragraphs without exceeding the planner prompt budget."""
+        lines: list[str] = []
+        total = 0
+        for index, paragraph in paragraphs:
+            chunk = f"[P{index}]\n{paragraph}"
+            if total + len(chunk) > max_chars:
+                lines.append(
+                    f"[正文过长，后续 {len(paragraphs) - index + 1} 段已省略；优先修复上方审查证据指向的段落。]"
+                )
+                break
+            lines.append(chunk)
+            total += len(chunk)
+        return "\n\n".join(lines)
+
+    def _build_structured_repair_task_instruction(
+        self,
+        *,
+        chapter_text: str,
+        review_report: str,
+        chapter: int,
+        outline: dict | None,
+        known_entities: list[str],
+    ) -> str:
+        """Build a generic LLM planning prompt from review report and numbered text."""
+        parts = ["# 结构化修复规划输入"]
+        if outline:
+            outline_lines = [f"- 章节: 第{chapter:03d}章"]
+            for key, label in (
+                ("title", "标题"),
+                ("goal", "本章目标"),
+                ("summary", "剧情大纲"),
+                ("ending_feeling", "结尾目标"),
+            ):
+                if outline.get(key):
+                    outline_lines.append(f"- {label}: {outline[key]}")
+            if outline.get("key_nodes"):
+                outline_lines.append("- 关键节点:")
+                outline_lines.extend(f"  - {item}" for item in outline["key_nodes"])
+            parts.append("## 本章大纲/契约\n" + "\n".join(outline_lines))
+
+        if known_entities:
+            parts.append("## 已知实体名\n" + "、".join(known_entities))
+
+        report = review_report
+        if len(report) > _LOCAL_PATCH_REPORT_MAX_CHARS:
+            report = report[:_LOCAL_PATCH_REPORT_MAX_CHARS] + "\n\n[审查报告过长，后文已截断。]"
+        parts.append("## 审查报告\n" + report)
+
+        paragraphs = self._numbered_paragraphs(chapter_text)
+        parts.append("## 编号正文段落\n" + self._format_numbered_paragraphs(paragraphs))
+        parts.append(
+            "## 规划要求\n"
+            "- 把每个阻断/高风险问题转成 repair task。\n"
+            "- paragraph_indexes 必须指向最小可修复段落窗口；如果证据是综合描述，也要根据正文段落定位。\n"
+            "- 不要提出整章重写，不要依赖题材关键词规则。"
+        )
+        return "\n\n".join(parts)
+
+    def _valid_repair_tasks(
+        self,
+        data: dict,
+        *,
+        paragraph_count: int,
+    ) -> list[dict]:
+        """Normalize LLM repair tasks and discard invalid paragraph references."""
+        raw_tasks = data.get("tasks", [])
+        if not isinstance(raw_tasks, list):
+            return []
+
+        tasks: list[dict] = []
+        for index, raw_task in enumerate(raw_tasks[:_STRUCTURED_REPAIR_MAX_TASKS], 1):
+            if not isinstance(raw_task, dict):
+                continue
+            raw_indexes = raw_task.get("paragraph_indexes", [])
+            if not isinstance(raw_indexes, list):
+                raw_indexes = [raw_indexes]
+            paragraph_indexes: list[int] = []
+            for value in raw_indexes:
+                try:
+                    paragraph_index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= paragraph_index <= paragraph_count and paragraph_index not in paragraph_indexes:
+                    paragraph_indexes.append(paragraph_index)
+            if not paragraph_indexes:
+                continue
+
+            task = dict(raw_task)
+            task["issue_id"] = str(task.get("issue_id") or f"I{index}")
+            task["blocking"] = bool(task.get("blocking", False))
+            task["paragraph_indexes"] = paragraph_indexes
+            task["required_fix"] = str(task.get("required_fix", "")).strip()
+            if not task["required_fix"]:
+                continue
+            tasks.append(task)
+
+        tasks.sort(key=lambda item: (not item.get("blocking", False), min(item["paragraph_indexes"])))
+        return tasks
+
+    async def _generate_structured_repair_tasks(
+        self,
+        chapter_text: str,
+        review_report: str,
+        *,
+        chapter: int,
+        outline: dict | None,
+        known_entities: list[str],
+    ) -> list[dict]:
+        """Ask the model to convert review feedback into generic repair tasks."""
+        paragraphs = self._numbered_paragraphs(chapter_text)
+        if not paragraphs:
+            return []
+
+        instruction = self._build_structured_repair_task_instruction(
+            chapter_text=chapter_text,
+            review_report=review_report,
+            chapter=chapter,
+            outline=outline,
+            known_entities=known_entities,
+        )
+        messages = [
+            {"role": "system", "content": _STRUCTURED_REPAIR_PLANNER_SYSTEM_PROMPT},
+            {"role": "user", "content": instruction},
+        ]
+        try:
+            task_data = await asyncio.wait_for(
+                self.provider.chat_json(messages, temperature=0.0, max_tokens=4096),
+                timeout=_PATCH_GENERATION_TIMEOUT,
+            )
+        except Exception as exc:
+            warn(f"  结构化修复规划失败: {exc}")
+            return []
+
+        tasks = self._valid_repair_tasks(task_data, paragraph_count=len(paragraphs))
+        if not tasks:
+            warn("  未生成可执行的结构化修复任务。")
+        return tasks
+
+    def _structured_task_windows(
+        self,
+        chapter_text: str,
+        task: dict,
+    ) -> list[str]:
+        """Build exact replacement windows around task paragraph indexes."""
+        paragraphs = self._numbered_paragraphs(chapter_text)
+        if not paragraphs:
+            return []
+        paragraph_map = {index: paragraph for index, paragraph in paragraphs}
+        indexes = [
+            value
+            for value in task.get("paragraph_indexes", [])
+            if isinstance(value, int) and value in paragraph_map
+        ]
+        if not indexes:
+            return []
+
+        first = min(indexes)
+        last = max(indexes)
+        paragraph_count = len(paragraphs)
+        spans = [
+            (first, last),
+            (max(1, first - 1), last),
+            (first, min(paragraph_count, last + 1)),
+            (max(1, first - 1), min(paragraph_count, last + 1)),
+        ]
+        spans.extend((index, index) for index in indexes)
+
+        windows: list[str] = []
+        seen: set[str] = set()
+        for start, end in spans:
+            parts = [paragraph_map[index] for index in range(start, end + 1) if index in paragraph_map]
+            window = "\n\n".join(parts).strip()
+            if not window or window in seen:
+                continue
+            seen.add(window)
+            windows.append(window)
+            if len(windows) >= _FOCUSED_PATCH_MAX_WINDOWS:
+                break
+        return windows
+
+    def _build_structured_task_patch_instruction(
+        self,
+        *,
+        task: dict,
+        windows: list[str],
+        chapter_text: str,
+        outline: dict | None,
+        known_entities: list[str],
+    ) -> str:
+        """Build the task-level exact patch prompt."""
+        parts = ["# 结构化局部补丁任务"]
+        if outline:
+            outline_bits = []
+            for key, label in (("summary", "剧情大纲"), ("goal", "本章目标"), ("ending_feeling", "结尾目标")):
+                if outline.get(key):
+                    outline_bits.append(f"- {label}: {outline[key]}")
+            if outline_bits:
+                parts.append("## 本章大纲/契约\n" + "\n".join(outline_bits))
+        if known_entities:
+            parts.append("## 已知实体名\n" + "、".join(known_entities))
+
+        parts.append(
+            "## Repair Task JSON\n"
+            + json.dumps(task, ensure_ascii=False, indent=2)
+        )
+        window_lines = [
+            f"### 窗口 {index}\n{window}"
+            for index, window in enumerate(windows, 1)
+        ]
+        parts.append("## 允许替换的原文窗口\n" + "\n\n".join(window_lines))
+        parts.append(
+            "## 完整原文（仅用于理解前后文，不可整章重写）\n"
+            + chapter_text[:_STRUCTURED_REPAIR_TEXT_MAX_CHARS]
+        )
+        return "\n\n".join(parts)
+
+    async def _generate_structured_task_edits(
+        self,
+        chapter_text: str,
+        task: dict,
+        *,
+        outline: dict | None,
+        known_entities: list[str],
+    ) -> list[dict]:
+        """Ask the model for exact edits for one structured repair task."""
+        windows = self._structured_task_windows(chapter_text, task)
+        if not windows:
+            return []
+        instruction = self._build_structured_task_patch_instruction(
+            task=task,
+            windows=windows,
+            chapter_text=chapter_text,
+            outline=outline,
+            known_entities=known_entities,
+        )
+        messages = [
+            {"role": "system", "content": _STRUCTURED_TASK_PATCH_SYSTEM_PROMPT},
+            {"role": "user", "content": instruction},
+        ]
+        try:
+            patch_data = await asyncio.wait_for(
+                self.provider.chat_json(messages, temperature=0.0, max_tokens=4096),
+                timeout=_PATCH_GENERATION_TIMEOUT,
+            )
+        except Exception as exc:
+            warn(f"  结构化任务补丁生成失败: {exc}")
+            return []
+
+        edits = patch_data.get("edits", [])
+        if not isinstance(edits, list) or not edits:
+            return []
+        return edits[:_STRUCTURED_REPAIR_MAX_EDITS]
+
     def _blocking_report_excerpt(self, review_report: str) -> str:
         """Keep blocking issue blocks when possible, falling back to full report."""
         blocks: list[str] = []
@@ -670,11 +942,25 @@ class WritingPipeline:
         """Extract searchable snippets from Markdown evidence quotes."""
         fragments: list[str] = []
         for raw in re.findall(r"^\s*-\s*\*\*证据\*\*:\s*>?\s*(.+)$", review_report, re.MULTILINE):
+            value = raw.strip(" >\t\r\n“”\"'")
+            if 6 <= len(value) <= 220:
+                fragments.append(value)
+            for quoted in re.findall(r"[‘“\"]([^’”\"]{4,220})[’”\"]", raw):
+                value = quoted.strip()
+                if len(value) >= 6:
+                    fragments.append(value[:80])
             for part in re.split(r"[。！？!?；;，,]|……|\.\.\.", raw):
                 value = part.strip(" >\t\r\n“”\"'")
                 if len(value) >= 6:
                     fragments.append(value[:40])
         for raw in re.findall(r"^\s*>\s*(.+)$", review_report, re.MULTILINE):
+            value = raw.strip(" >\t\r\n“”\"'")
+            if 6 <= len(value) <= 220:
+                fragments.append(value)
+            for quoted in re.findall(r"[‘“\"]([^’”\"]{4,220})[’”\"]", raw):
+                value = quoted.strip()
+                if len(value) >= 6:
+                    fragments.append(value[:80])
             for part in re.split(r"[。！？!?；;，,]|……|\.\.\.", raw):
                 value = part.strip(" >\t\r\n“”\"'")
                 if len(value) >= 6:
@@ -689,6 +975,68 @@ class WritingPipeline:
             unique.append(item)
         return unique
 
+    def _review_search_terms(self, review_report: str, known_entities: list[str]) -> list[str]:
+        """Extract short search terms from the current report instead of fixed story lore."""
+        candidates: list[str] = []
+        candidates.extend(name for name in known_entities if name and name in review_report)
+
+        for quoted in re.findall(r"[‘“\"《「『]([^’”\"》」』]{2,80})[’”\"》」』]", review_report):
+            for part in re.split(r"[。！？!?；;，,\s、：:（）()\[\]【】]", quoted):
+                value = part.strip()
+                if 2 <= len(value) <= 18:
+                    candidates.append(value)
+
+        candidates.extend(re.findall(r"[A-Za-z][A-Za-z0-9_/-]{1,24}", review_report))
+
+        stopwords = {
+            "问题",
+            "描述",
+            "证据",
+            "正文",
+            "大纲",
+            "要求",
+            "实际",
+            "情况",
+            "修复",
+            "候选稿",
+            "当前",
+            "章节",
+            "阻断",
+            "审查",
+            "报告",
+            "指出",
+            "导致",
+            "因为",
+            "但是",
+            "不能",
+            "必须",
+            "没有",
+            "需要",
+            "属于",
+            "存在",
+            "如果",
+            "已经",
+            "应该",
+        }
+        for token in re.findall(r"[\u4e00-\u9fff]{2,8}", review_report):
+            if token in stopwords:
+                continue
+            if any(token.startswith(prefix) for prefix in ("第", "问题", "描述", "证据")):
+                continue
+            candidates.append(token)
+
+        seen: set[str] = set()
+        terms: list[str] = []
+        for item in candidates:
+            value = item.strip()
+            if len(value) < 2 or value in seen:
+                continue
+            seen.add(value)
+            terms.append(value)
+            if len(terms) >= 24:
+                break
+        return terms
+
     def _focused_patch_windows(
         self,
         chapter_text: str,
@@ -699,59 +1047,11 @@ class WritingPipeline:
         """Pick exact paragraphs most likely responsible for current blockers."""
         blocking_report = self._blocking_report_excerpt(review_report)
         evidence_fragments = self._review_evidence_fragments(blocking_report)
-        targeted_terms = [
-            "周小禾",
-            "儿子",
-            "瞳孔",
-            "荧光",
-            "发光",
-            "共鸣",
-            "它们",
-            "不冷",
-            "不属于人类",
-            "生硬",
-            "微笑",
-            "绿色纹路",
-            "叶脉",
-            "无恐惧",
-            "平静",
-            "合成",
-            "抗性因子",
-            "血清",
-            "注射器",
-            "淡蓝色",
-            "一个月",
-            "两个月",
-            "十五分钟",
-            "二十分钟",
-            "药效",
-            "退无可退",
-            "淹没",
-            "完全涌入",
-            "紧急通道",
-            "牺牲",
-            "包围",
-            "同化",
-            "被标记",
-            "新闻",
-            "推送",
-            "监控",
-            "录像",
-            "转述",
-            "配给",
-            "存量",
-            "吞噬",
-            "半活",
-            "攻击",
-            "伏特加",
-            "口罩",
-            "防毒",
-        ]
 
         entities_in_report = [
             name for name in known_entities if name and name in blocking_report
         ]
-        terms = [term for term in targeted_terms if term in blocking_report]
+        terms = self._review_search_terms(blocking_report, known_entities)
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n", chapter_text) if part.strip()]
         scored: list[tuple[int, int, str]] = []
 
@@ -772,11 +1072,19 @@ class WritingPipeline:
         scored.sort(key=lambda item: (-item[0], item[1]))
         windows: list[str] = []
         seen: set[str] = set()
-        for _, _, paragraph in scored:
-            if paragraph in seen:
-                continue
-            seen.add(paragraph)
-            windows.append(paragraph)
+        for _, index, paragraph in scored:
+            candidates = [
+                paragraph,
+                "\n\n".join(paragraphs[index:index + 2]),
+                "\n\n".join(paragraphs[max(0, index - 1):index + 2]),
+            ]
+            for candidate in candidates:
+                if not candidate or candidate in seen:
+                    continue
+                seen.add(candidate)
+                windows.append(candidate)
+                if len(windows) >= _FOCUSED_PATCH_MAX_WINDOWS:
+                    break
             if len(windows) >= _FOCUSED_PATCH_MAX_WINDOWS:
                 break
         return windows
@@ -829,7 +1137,10 @@ class WritingPipeline:
             "## 输出要求\n"
             "- 只输出JSON，格式为 {\"edits\":[{\"old\":\"...\",\"new\":\"...\",\"reason\":\"...\"}]}。\n"
             "- old 必须完整等于上方某一个“允许替换的原文窗口”，不得截断、拼接或改写。\n"
+            "- 如果单段窗口不足以修复因果或视角问题，优先选择包含相邻上下文的多段窗口。\n"
             "- new 只修复当前阻断问题，保持本段功能与前后剧情衔接；不要改写无关事件。\n"
+            "- 如果报告指出视角、位置或感知条件冲突，new 必须让角色所在位置、可见范围和认知结果同时成立。\n"
+            "- 如果报告指出设定、能力或规则边界被越权，new 必须把信息来源、能力效果和因果链收回到审查报告允许的范围内。\n"
             "- 如果问题是信息暴露过早，new 必须把明确结论降级成暧昧线索；不要新增设定解释来坐实结论。\n"
             "- 如果任何窗口都不能安全修复，返回空 edits。"
         )
@@ -841,7 +1152,7 @@ class WritingPipeline:
         text: str,
         review_report: str,
     ) -> tuple[str, int]:
-        """Apply narrow deterministic repairs for unambiguous review findings."""
+        """Apply only mechanical repairs that do not depend on story content."""
         result = text
         applied = 0
 
@@ -856,72 +1167,6 @@ class WritingPipeline:
                     if count:
                         result = result.replace(wrong, canonical)
                         applied += count
-
-        if re.search(r"(压缩饼干|优质食物源|热量和营养)", review_report) and re.search(
-            r"(逻辑冲突|旧阻断证据|配给制|饥饿|生存常态|缺乏前文铺垫)", review_report
-        ):
-            for evidence in self._blocking_evidence_texts(review_report):
-                if evidence not in result:
-                    continue
-                if not (
-                    re.search(r"(压缩饼干|刚刚进食|半块饼干)", evidence)
-                    and re.search(r"(优质食物源|热量和营养|吞噬目标)", evidence)
-                ):
-                    continue
-                replacement = (
-                    "汪禾的牺牲，不是因为他比周也父子更像食物，"
-                    "而是因为营养液、福尔马林和血在防护服上混成了刺鼻的气味轨迹。"
-                    "藤蔓追着那条轨迹涌向他，暂时放过了两个同样饥饿、贫瘠的活人。"
-                )
-                result = result.replace(evidence, replacement, 1)
-                applied += 1
-
-        if "研究资料" in review_report and not self._has_research_material(result):
-            replacements = [
-                (
-                    "急救包里的逆转录酶硌着他的肋骨，那是汪禾用命换来的七分之一概率。",
-                    "急救包里的逆转录酶和汪禾塞进来的防水资料袋硌着他的肋骨。袋子里有实验记录、配方页和数据芯片，那是汪禾用命换来的七分之一概率。",
-                ),
-                (
-                    "汪禾没有将试管递给他，而是猛地将其塞进了周也胸前的急救包，拉链拉上的声音在嘈杂中异常刺耳。",
-                    "汪禾没有将试管递给他，而是猛地将其塞进了周也胸前的急救包，又把一只防水资料袋压在试管旁边。拉链拉上的声音在嘈杂中异常刺耳。",
-                ),
-            ]
-            for old, new in replacements:
-                if old in result:
-                    result = result.replace(old, new, 1)
-                    applied += 1
-                    break
-
-        if re.search(r"(前财务|财务从业|财务)", review_report) and re.search(
-            r"(战术|战略|精确制导|军事|战术素养|严重割裂)", review_report
-        ):
-            replacements = [
-                (
-                    "聚居地不是避难所，而是养殖场。那些高墙和铁丝网，不是为了把禾苗挡在外面，而是为了把人类圈在里面。当禾苗需要进食时，标记者就会发作，引导藤蔓精准收割。人类在恐惧中互相依偎，以为只要熬过冬天就能等来救援，却不知道自己只是被圈养在笼中的肉畜，每一寸脂肪的积累，都只是为了最终的屠宰。",
-                    "周也盯着那些高墙和铁丝网，像重新核对一张错账。它们没有把禾苗挡在外面，只是把人留在同一处地方，等标记者发作，等藤蔓循着烙印把人一批批拖走。所谓安全，只是把亏空推迟到账的日子。",
-                ),
-                (
-                    "他们穿行在废墟的阴影里。街道已经不存在了，取而代之的是藤蔓交织成的栈道。周也避开了主干道上那些粗如水桶的藤蔓，选择在建筑物的残骸间跳跃。他必须时刻留意脚下的裂缝，那些裂缝里往往潜伏着白色的须根，只要感受到上方热源的震动，它们就会像蛇一样钻出，缠住猎物的脚踝。",
-                    "他们穿行在废墟的阴影里。街道已经不存在了，取而代之的是藤蔓交织成的栈道。周也贴着建筑物残骸往前挪，每走几步就停下来听地底的细响；地面微微鼓起的地方，他宁愿多绕半圈，也不敢让周小禾的脚碰上去。",
-                ),
-            ]
-            for old, new in replacements:
-                if old in result:
-                    result = result.replace(old, new, 1)
-                    applied += 1
-            term_replacements = {
-                "战略储备": "存粮",
-                "精确制导的屠宰": "循着烙印来的屠宰",
-                "战术规避": "绕开危险",
-                "精准定位": "循着养分浓度找来",
-                "精准收割": "循着标记收割",
-            }
-            for old, new in term_replacements.items():
-                count = result.count(old)
-                if count:
-                    result = result.replace(old, new)
-                    applied += count
 
         return result, applied
 
@@ -1100,11 +1345,12 @@ class WritingPipeline:
         candidate: ReviewResult,
         baseline: ReviewResult,
     ) -> bool:
-        """Only accept repair candidates that monotonically reduce review risk.
+        """Only accept repair candidates that make review feedback smaller.
 
-        Blocking issues are primary. If a repair does not reduce blockers, it
-        must also avoid increasing the total issue count; this prevents the
-        common "fix one sentence, create more review noise" failure mode.
+        Blocking issues are primary. For the same blocker count, a candidate can
+        still be useful when it removes concrete issues; reviewers can relabel
+        severity between rounds, so allow a small risk-score drift when the
+        total issue list shrinks.
         """
         if candidate.passed:
             return True
@@ -1113,12 +1359,18 @@ class WritingPipeline:
 
         candidate_score = self._review_risk_score(candidate)
         baseline_score = self._review_risk_score(baseline)
-        if candidate_score >= baseline_score:
-            return False
+
         if candidate.blocking_count < baseline.blocking_count:
             return True
+        if candidate.blocking_count > baseline.blocking_count:
+            return False
+        if len(candidate.issues) < len(baseline.issues):
+            return (
+                candidate_score
+                <= baseline_score + _REPAIR_SAME_BLOCKER_RISK_TOLERANCE
+            )
         return (
-            candidate.blocking_count == baseline.blocking_count
+            candidate_score < baseline_score
             and len(candidate.issues) <= len(baseline.issues)
         )
 
@@ -1275,42 +1527,13 @@ class WritingPipeline:
         return bool(
             re.search(r"(结尾|大纲|后续|提前|推进过头|越界)", review_report)
             and re.search(
-                r"(包围|涌入|吞噬|牺牲|逃离|注射|解药|血清|抗性因子|合成|药效|一个月|两个月|十五分钟)",
+                r"(后续|提前|完成|已经发生|推进|结局|下一章|后文|越界|落定)",
                 review_report,
             )
         )
 
     def _find_tail_repair_start(self, chapter_text: str, review_report: str) -> int | None:
         """Find a suffix boundary for chapter-overrun repairs."""
-        markers = [
-            "气密门彻底倒塌",
-            "数不清的藤蔓像决堤的洪水",
-            "藤蔓像决堤的洪水",
-            "漫过门槛",
-            "切断了通往内室的退路",
-            "死死围在了操作台前",
-            "一根纤细的藤蔓从操作台边缘探出",
-            "可以，但撑不了多久。",
-            "这道门能挡住它们三小时",
-            "话音未落，一声巨响",
-            "话音未落",
-            "门再次被撞击",
-            "那扇厚重的金属门",
-            "汪禾手里拿着一支新的注射器",
-            "注射器内的液体是淡蓝色",
-            "绿色的洪流涌入实验室",
-            "实验室已经被绿色完全淹没",
-            "周也抱着儿子退向",
-            "针头刺入周小禾",
-        ]
-        positions = [
-            chapter_text.find(marker)
-            for marker in markers
-            if marker in chapter_text
-        ]
-        if positions:
-            return min(pos for pos in positions if pos >= 0)
-
         fragments = self._review_evidence_fragments(review_report)
         evidence_positions = [
             chapter_text.find(fragment)
@@ -1320,7 +1543,13 @@ class WritingPipeline:
         if evidence_positions:
             return min(pos for pos in evidence_positions if pos >= 0)
 
-        return None
+        paragraphs = [part for part in re.split(r"\n\s*\n", chapter_text) if part.strip()]
+        if len(paragraphs) < 3:
+            return None
+
+        tail_start = max(1, int(len(paragraphs) * 0.6))
+        prefix = "\n\n".join(paragraphs[:tail_start])
+        return len(prefix) + 2 if prefix else None
 
     def _build_tail_repair_instruction(
         self,
@@ -1367,11 +1596,10 @@ class WritingPipeline:
             "## 修复要求\n"
             "- 只输出替换后的尾段正文。\n"
             "- 必须删除或改写提前发生的后续章节事件。\n"
-            "- 如果本章大纲结尾是“禾苗包围实验室”，尾段应停在包围、撞门、倒计时、研究未完成的悬念；不要写汪禾牺牲完成、周也逃离、注射见效。\n"
-            "- 包围不等于攻破。禁止写气密门倒塌、藤蔓漫过门槛、切断室内退路、探到操作台、人物被室内围住。\n"
-            "- 如果需要样本分析或解药研究，必须保留“还需要时间”的压力，不能几分钟内合成有效药剂。\n"
-            "- 不要让血清、配方、研究者或唯一希望在本章被彻底毁灭；第8章只负责把威胁压到门口，不负责写出最终牺牲和逃亡结果。\n"
-            "- 如果前文门能撑几小时会造成矛盾，必须把尾段中的预估改成不确定或很短；更稳妥的写法是让门尚未彻底失守，停在被包围和持续撞击。"
+            "- 尾段必须停在本章大纲指定的悬念、状态或情绪目标，不要写完后续章才该发生的结果。\n"
+            "- 如果报告指出“临近/包围/逼近”和“攻破/完成/解决”混淆，必须按大纲要求保留未完成状态。\n"
+            "- 如果报告指出时间、研究、手续或行动需要过程，不能让复杂结果在几分钟内直接完成。\n"
+            "- 不要让关键希望、关键证据或关键人物在本章被彻底终结，除非本章大纲明确要求。"
         )
         return "\n\n".join(parts)
 
@@ -1556,6 +1784,74 @@ class WritingPipeline:
             return []
         return edits[:_LOCAL_PATCH_MAX_EDITS]
 
+    async def _transactional_structured_repair(
+        self,
+        chapter_text: str,
+        review_result: ReviewResult,
+        review_contract: ReviewContract,
+        review_report: str,
+        *,
+        chapter: int,
+        outline: dict | None,
+        known_entities: list[str],
+        reference_text: str,
+    ) -> tuple[str, ReviewResult, str, int, int]:
+        """Apply one LLM-planned repair task transactionally."""
+        tasks = await self._generate_structured_repair_tasks(
+            chapter_text,
+            review_report,
+            chapter=chapter,
+            outline=outline,
+            known_entities=known_entities,
+        )
+        if not tasks:
+            return chapter_text, review_result, review_report, 0, 0
+
+        rejected_count = 0
+        for task in tasks[:_STRUCTURED_REPAIR_MAX_TASKS]:
+            edits = await self._generate_structured_task_edits(
+                chapter_text,
+                task,
+                outline=outline,
+                known_entities=known_entities,
+            )
+            if not edits:
+                continue
+
+            for edit in edits[:_STRUCTURED_REPAIR_MAX_EDITS]:
+                candidate_text, applied, errors = self._apply_text_edits(chapter_text, [edit])
+                for item in errors:
+                    logger.info("Structured repair patch skipped: %s", item)
+                if not applied:
+                    rejected_count += 1
+                    continue
+
+                candidate_result, candidate_report = await self._review_candidate_text(
+                    chapter=chapter,
+                    candidate_text=candidate_text,
+                    review_contract=review_contract,
+                    reference_text=reference_text,
+                    outline=outline,
+                    known_entities=known_entities,
+                    previous_review_report=review_report,
+                )
+                if self._is_repair_improvement(candidate_result, review_result):
+                    info(
+                        "  已采用结构化修复任务 "
+                        f"{task.get('issue_id', '')}: "
+                        f"{self._review_metrics_label(review_result)} -> {self._review_metrics_label(candidate_result)}。"
+                    )
+                    return candidate_text, candidate_result, candidate_report, 1, rejected_count
+
+                rejected_count += 1
+                warn(
+                    "  丢弃结构化修复任务 "
+                    f"{task.get('issue_id', '')}: "
+                    f"{self._review_metrics_label(review_result)} -> {self._review_metrics_label(candidate_result)}。"
+                )
+
+        return chapter_text, review_result, review_report, 0, rejected_count
+
     async def _transactional_local_patch_repair(
         self,
         chapter_text: str,
@@ -1574,6 +1870,32 @@ class WritingPipeline:
         current_report = review_report
         accepted_count = 0
         rejected_count = 0
+
+        (
+            structured_text,
+            structured_result,
+            structured_report,
+            structured_accepted,
+            structured_rejected,
+        ) = await self._transactional_structured_repair(
+            current_text,
+            current_result,
+            review_contract,
+            current_report,
+            chapter=chapter,
+            outline=outline,
+            known_entities=known_entities,
+            reference_text=reference_text,
+        )
+        rejected_count += structured_rejected
+        if structured_accepted:
+            return (
+                structured_text,
+                structured_result,
+                structured_report,
+                structured_accepted,
+                rejected_count,
+            )
 
         deterministic_text, deterministic_count = self._apply_deterministic_review_patches(
             current_text, current_report
@@ -1944,6 +2266,15 @@ class WritingPipeline:
         review_path.write_text(report, encoding="utf-8")
         logger.info("Candidate saved: %s", chapter_path)
         return chapter_path
+
+    def _clear_candidate(self, chapter: int) -> None:
+        """Remove stale rejected-candidate files after an official save."""
+        candidates_dir = self._paths["aznovel_dir"] / "candidates"
+        for suffix in (".candidate.md", ".candidate_review.md"):
+            path = candidates_dir / f"chapter_{chapter:03d}{suffix}"
+            if path.exists():
+                path.unlink()
+                logger.info("Candidate cleared: %s", path)
 
     def _split_chapter_document(self, raw: str, chapter: int) -> tuple[str, str]:
         """Split a saved chapter Markdown document into title and body."""
@@ -2779,7 +3110,7 @@ class WritingPipeline:
         self,
         *,
         target: int | None = None,
-        max_repair_attempts: int = 2,
+        max_repair_attempts: int = AUTO_RUN_REPAIR_ATTEMPTS_DEFAULT,
         on_step=None,
     ) -> bool:
         """Write missing chapters through normal review, then finalize the manuscript."""
@@ -2807,7 +3138,7 @@ class WritingPipeline:
         try:
             max_repair_attempts = int(max_repair_attempts)
         except (TypeError, ValueError):
-            max_repair_attempts = 2
+            max_repair_attempts = AUTO_RUN_REPAIR_ATTEMPTS_DEFAULT
         max_repair_attempts = max(0, max_repair_attempts)
 
         chapters_dir = self._paths["chapters_dir"]
@@ -2987,7 +3318,7 @@ class WritingPipeline:
             "1. 优先修复审查报告中所有 [BLOCKING]、critical、high 问题；这些问题未修复时不得保留原句或同类问题。\n"
             "2. 若审查报告指出大纲合规性问题，必须回到“本章大纲”逐项补齐，不可用相近事件替代指定事件。\n"
             "3. 若审查报告指出实体、时间线、设定或逻辑矛盾，必须统一称谓、因果和设定，不要新增新的矛盾来解释旧矛盾。\n"
-            "4. 大纲或已知实体中出现的角色、组织、地点、物品名称必须精确保留；不要用“教授”“儿子”“公司”等泛称替代“汪禾”“周小禾”“绿源生命科学公司”等专名。\n"
+            "4. 大纲或已知实体中出现的角色、组织、地点、物品名称必须精确保留；不要用“教授”“儿子”“公司”等泛称替代具体专名。\n"
             "5. 若审查报告指出事件呈现方式偏离大纲（例如写成回忆、录像、新闻转述而不是现场事件），必须把对应事件改成直接发生的场景。\n"
             "6. 若审查报告指出流程、制度或手续无法闭环，不要用更复杂的新设定补洞；优先删掉造成漏洞的细节，改成更简单、可核验的因果链。\n"
             "7. 若审查报告指出 AI 味、套路化比喻、排比推演或展示后解释，必须删除或改写对应证据句，改成具体动作、场景、感官细节或克制叙述。\n"
@@ -3171,6 +3502,7 @@ class WritingPipeline:
         # Step 4: Save
         _step("保存章节...")
         self._save_chapter(chapter, title, new_text)
+        self._clear_candidate(chapter)
 
         if commit.status == "accepted":
             if was_cascaded and subsequent:
@@ -3201,11 +3533,14 @@ class WritingPipeline:
         candidate_path = (
             self._paths["aznovel_dir"] / "candidates" / f"chapter_{chapter:03d}.candidate.md"
         )
-        if chapter_path.exists():
-            source_path = chapter_path
-        elif candidate_path.exists():
+        if candidate_path.exists():
             source_path = candidate_path
-            warn(f"第{chapter}章正式正文不存在，将修复最近一次候选稿。")
+            if chapter_path.exists():
+                warn(f"第{chapter}章存在未通过候选稿，将继续修复最近一次候选稿。")
+            else:
+                warn(f"第{chapter}章正式正文不存在，将修复最近一次候选稿。")
+        elif chapter_path.exists():
+            source_path = chapter_path
         else:
             error(f"第{chapter}章不存在，无法修复。请用 write 命令新建。")
             return False
@@ -3298,6 +3633,7 @@ class WritingPipeline:
 
         _step("保存章节...")
         self._save_chapter(chapter, title, chapter_text)
+        self._clear_candidate(chapter)
 
         if commit.status == "accepted":
             success(f"第{chapter}章修复完成！")

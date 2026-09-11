@@ -104,178 +104,78 @@ def test_local_patch_instruction_requires_exact_old_new(tmp_path) -> None:
     assert "周小禾坐在桌前。" in instruction
 
 
-def test_repair_strategy_notes_handle_indirect_events_and_resource_gaps(tmp_path) -> None:
+def test_repair_strategy_notes_use_cross_genre_tactics(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
     report = (
-        "大纲要求结尾第一起公开攻击事件发生，农场主被禾苗吞噬。"
-        "正文实际是一条紧急新闻推送和监控录像。"
-        "周也靠零活维生，早餐时周小禾吃了两份禾苗2.0并要求更多，配给制下存量不可信。"
+        "大纲要求关键事件在现场直接发生，但正文实际只是一条新闻推送和录像转述。"
+        "主角预算不足，库存也只剩一件，后文却突然写成还有很多备用物资，数量不闭合。"
     )
 
     instruction = pipeline._build_polish_instruction(
         chapter_text="正文",
         review_report=report,
         chapter=5,
-        outline={"summary": "第一起公开攻击事件发生，农场主被禾苗吞噬。"},
-        known_entities=["周也", "周小禾"],
+        outline={"summary": "关键事件在现场发生，主角被迫处理资源不足。"},
+        known_entities=["主角", "远星公司"],
     )
 
     assert "自动诊断修复策略" in instruction
-    assert "不能只通过新闻、手机推送、录像、回忆或他人口述完成" in instruction
-    assert "资源稀缺或配给制冲突必须用数量闭环解决" in instruction
+    assert "不能只通过新闻、推送、录像、回忆或他人口述完成" in instruction
+    assert "资源、库存、时间、钱款或物资不足类冲突" in instruction
+    assert "汪禾" not in instruction
+    assert "周小禾" not in instruction
 
 
-def test_repair_strategy_notes_handle_food_lure_contradiction(tmp_path) -> None:
+def test_repair_strategy_notes_handle_setting_boundary_and_premature_reveal(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
     report = (
-        "汪禾被设定为饥饿的幸存者，但正文为解释其被攻击的原因，"
-        "强行设定他刚刚进食过压缩饼干成为优质食物源，"
-        "这与末日配给制下的生存常态产生逻辑冲突。"
-    )
-
-    instruction = pipeline._build_micro_evidence_patch_instruction(
-        evidence=(
-            "汪禾的牺牲，不仅是因为他制造了气味干扰，更因为他是一个刚刚进食过压缩饼干、"
-            "体内重新获得了热量和营养的“优质食物源”。那半块饼干的代价，就是让他成为了藤蔓首选的吞噬目标。"
-        ),
-        review_report=report,
-        outline={"summary": "汪禾牺牲自己引开禾苗，周也带儿子和研究资料逃离。"},
-    )
-
-    assert "压缩饼干/优质食物源" in instruction
-    assert "收回到正文已有的化学诱饵" in instruction
-    assert "如果问题是错误因果或强行解释" in instruction
-
-
-def test_repair_strategy_notes_handle_mumbling_and_abstract_thinking(tmp_path) -> None:
-    pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    report = (
-        "大纲要求儿子夜里眼睛泛微光喃喃自语，但正文写成代码式术语：碳基、载体、适配度。"
-        "大纲要求周也惊恐发现禾苗在思考，但正文通过抽象主观论述和运算解释完成，缺少直观场景。"
-    )
-
-    instruction = pipeline._build_local_patch_instruction(
-        chapter_text="正文",
-        review_report=report,
-        chapter=5,
-        outline={"summary": "周也儿子夜里眼睛泛微光喃喃自语，周也惊恐发现禾苗在思考。"},
-        known_entities=["周也", "周小禾"],
-    )
-
-    assert "喃喃自语被写成代码式术语" in instruction
-    assert "改为含混、破碎、低声的人类语句" in instruction
-    assert "改为可被看见/听见的现场证据" in instruction
-
-
-def test_repair_strategy_notes_handle_accountant_tactical_ooc(tmp_path) -> None:
-    pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    report = (
-        "周也的设定为失业半年的前财务从业者，但文中表现出极强战术素养，"
-        "如战略储备、精确制导的屠宰、战术规避，与人物设定严重割裂。"
-    )
-
-    instruction = pipeline._build_local_patch_instruction(
-        chapter_text="正文",
-        review_report=report,
-        chapter=10,
-        outline={"summary": "周也带儿子继续逃亡，世界面目全非。"},
-        known_entities=["周也", "周小禾"],
-    )
-
-    assert "前财务从业者被写成军事/战术专家" in instruction
-    assert "删除战略、战术、精确制导" in instruction
-    assert "重新核对一笔坏账" in instruction
-
-
-def test_repair_strategy_notes_handle_swallowed_not_half_alive(tmp_path) -> None:
-    pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    report = (
-        "大纲要求农场主被禾苗吞噬，但正文写成赵金标没有死，"
-        "还能主动攻击周也，未被吞噬消失，存在偏离。"
-    )
-
-    instruction = pipeline._build_polish_instruction(
-        chapter_text="正文",
-        review_report=report,
-        chapter=5,
-        outline={"summary": "结尾第一起公开攻击事件发生，农场主被禾苗吞噬。"},
-        known_entities=["周也"],
-    )
-
-    assert "必须让该角色在现场被吸收、消化、消失或只剩衣物/骨骼残留" in instruction
-    assert "不要改成半活怪物、宿主反扑或战斗场面" in instruction
-
-
-def test_repair_strategy_notes_handle_infection_progression(tmp_path) -> None:
-    pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    report = (
-        "周也手背青紫脉络泛荧光的变异程度与禾苗同化逻辑冲突，"
-        "若变异至此应丧失行动能力，不可能自由行动。"
-    )
-
-    instruction = pipeline._build_local_patch_instruction(
-        chapter_text="正文",
-        review_report=report,
-        chapter=5,
-        outline={"summary": "周也发现禾苗在思考。"},
-        known_entities=["周也"],
-    )
-
-    assert "把主角症状降级为早期、局部、间歇性反应" in instruction
-    assert "不能写到与被吞噬者相同的全身同化程度" in instruction
-
-
-def test_repair_strategy_notes_handle_premature_child_reveal(tmp_path) -> None:
-    pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    report = (
-        "周小禾表现出明显的被同化症状，瞳孔发光、与植物共鸣、无恐惧，"
-        "与大纲结尾才发现儿子被标记的节奏冲突，提前暴露异变状态。"
+        "能力设定规则边界被越权，角色直接得到规则不允许的信息。"
+        "关键真相按大纲应在结尾才揭示，正文中段却提前暴露，破坏悬念节奏。"
     )
 
     instruction = pipeline._build_local_patch_instruction(
         chapter_text="正文",
         review_report=report,
         chapter=6,
-        outline={"summary": "结尾周也发现儿子被标记。"},
-        known_entities=["周也", "周小禾"],
+        outline={"summary": "结尾才揭示关键真相。"},
+        known_entities=["主角"],
     )
 
-    assert "儿子的异变/被标记暴露过早" in instruction
-    assert "降级为可疑但未定性的异常线索" in instruction
+    assert "身份、职业、能力或世界观规则越界" in instruction
+    assert "把行为、信息来源和推理过程收回到该限制内" in instruction
+    assert "信息暴露过早" in instruction
+    assert "降级成可疑但未定性的线索" in instruction
 
 
-def test_repair_strategy_notes_handle_chapter_overrun_and_serum_timing(tmp_path) -> None:
+def test_repair_strategy_notes_handle_chapter_overrun_and_timing(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
     report = (
-        "第8章大纲要求结尾禾苗包围实验室，但正文写成禾苗完全涌入并吞噬，"
-        "汪禾牺牲自己，周也逃离并给儿子注射解药。"
-        "汪禾前文说解药需要一个月也许两个月，血清分离还需要十五分钟，"
-        "后文却立刻用抗性因子合成淡蓝色注射剂。"
+        "第8章大纲要求结尾停在门外逼近的悬念，但正文提前写出后续章已经完成的逃离结果。"
+        "前文说手续至少需要几小时，后文却几分钟内完成，时间线冲突。"
     )
 
     instruction = pipeline._build_local_patch_instruction(
         chapter_text="正文",
         review_report=report,
         chapter=8,
-        outline={"summary": "汪禾正研究解药但需时间。结尾禾苗包围实验室。"},
-        known_entities=["周也", "周小禾", "汪禾"],
+        outline={"summary": "结尾停在威胁逼近，结果尚未完成。"},
+        known_entities=["主角"],
     )
 
-    assert "章节越界" in instruction
-    assert "收回到大纲指定的悬念点" in instruction
-    assert "不能让刚采集的血样在几分钟内合成新药" in instruction
+    assert "章节越界或结尾推进过头" in instruction
+    assert "收回到本章大纲指定的悬念点" in instruction
+    assert "时间线或耗时矛盾" in instruction
 
 
-def test_tail_repair_detects_chapter_overrun_boundary(tmp_path) -> None:
+def test_tail_repair_detects_chapter_overrun_boundary_from_evidence(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
     report = (
-        "第8章大纲要求结尾禾苗包围实验室，但正文提前写出汪禾牺牲、"
-        "周也逃离、注射解药和药效见效。"
+        "第8章大纲要求停在威胁逼近，但正文提前写出后续章已经完成的逃离。\n"
+        "- **证据**: > 话音未落，门外传来巨响。主角抱着同伴逃出设施，所有问题已经解决。"
     )
     chapter_text = (
-        "汪禾说血清分离还需要十五分钟。\n\n"
-        "话音未落，一声巨响从门外传来。那扇厚重的金属门开始变形。\n\n"
-        "周也抱着儿子逃离，针头刺入周小禾的手臂。"
+        "主角还在核对倒计时。\n\n"
+        "话音未落，门外传来巨响。主角抱着同伴逃出设施，所有问题已经解决。"
     )
 
     assert pipeline._is_chapter_overrun_report(report) is True
@@ -283,41 +183,41 @@ def test_tail_repair_detects_chapter_overrun_boundary(tmp_path) -> None:
     assert start == chapter_text.index("话音未落")
 
 
-def test_tail_repair_boundary_can_include_bad_door_time_estimate(tmp_path) -> None:
+def test_tail_repair_boundary_falls_back_to_late_chapter_when_report_has_no_quote(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    report = "门能挡住三小时四小时，但十五分钟内就被攻破，防御时间矛盾。"
+    report = "第8章大纲要求停在悬念，但正文提前写出后续结果，章节越界。"
     chapter_text = (
-        "汪禾说还需要时间。\n\n"
-        "可以，但撑不了多久。汪禾走向控制面板，这道门能挡住它们三小时。也许四小时。\n\n"
-        "话音未落，一声巨响从门外传来。"
+        "第一段。\n\n"
+        "第二段。\n\n"
+        "第三段。\n\n"
+        "第四段写出后续结果。\n\n"
+        "第五段继续收束。"
     )
 
     start = pipeline._find_tail_repair_start(chapter_text, report)
-    assert start == chapter_text.index("可以，但撑不了多久。")
+    assert start == chapter_text.index("第四段")
 
 
-def test_tail_repair_boundary_starts_at_breach_when_only_breach_overruns(tmp_path) -> None:
+def test_tail_repair_instruction_stays_generic(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    report = "大纲要求结尾禾苗包围实验室，但正文写成气密门彻底倒塌，藤蔓漫过门槛并探到操作台。"
+    report = "大纲要求停在威胁逼近，但正文写成威胁已经解决。"
     chapter_text = (
-        "门缝里的绿光越来越亮，门板发出痛苦的呻吟。\n\n"
-        "气密门彻底倒塌。\n\n"
-        "数不清的藤蔓像决堤的洪水般漫过门槛，一根纤细的藤蔓从操作台边缘探出。"
+        "门外的声音越来越近。\n\n"
+        "门彻底打开，主角已经离开。"
     )
 
     instruction = pipeline._build_tail_repair_instruction(
-        prefix=chapter_text[: chapter_text.index("气密门彻底倒塌")].strip(),
-        tail=chapter_text[chapter_text.index("气密门彻底倒塌"):],
+        prefix=chapter_text[: chapter_text.index("门彻底打开")].strip(),
+        tail=chapter_text[chapter_text.index("门彻底打开"):],
         review_report=report,
         chapter=8,
-        outline={"summary": "结尾禾苗包围实验室。"},
-        known_entities=["周也", "周小禾", "汪禾"],
+        outline={"summary": "结尾停在威胁逼近。"},
+        known_entities=["主角"],
     )
 
-    start = pipeline._find_tail_repair_start(chapter_text, report)
-    assert start == chapter_text.index("气密门彻底倒塌")
-    assert "包围不等于攻破" in instruction
-    assert "禁止写气密门倒塌" in instruction
+    assert "停在本章大纲指定的悬念" in instruction
+    assert "不要写完后续章才该发生的结果" in instruction
+    assert "禾苗" not in instruction
 
 
 def test_blocking_evidence_texts_strip_quote_prefix(tmp_path) -> None:
@@ -335,13 +235,13 @@ def test_blocking_evidence_texts_strip_quote_prefix(tmp_path) -> None:
 def test_blocking_evidence_texts_keep_long_causal_evidence(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
     evidence = (
-        "汪禾的牺牲，不仅是因为他制造了气味干扰，更因为他是一个刚刚进食过压缩饼干、"
-        "体内重新获得了热量和营养的“优质食物源”。那半块饼干的代价，就是让他成为了藤蔓首选的吞噬目标。"
+        "角色甲的牺牲，不仅是因为他制造了气味干扰，更因为他刚刚补充过能量，"
+        "被错误写成了“高能量目标”。那次补给的代价，就是让他成为了怪物首选的攻击目标。"
     )
     report = (
         "### 🟠 问题 1 [BLOCKING]\n"
         "- **类别**: logic\n"
-        "- **描述**: 刚进食压缩饼干成为优质食物源，与配给制生存常态逻辑冲突。\n"
+        "- **描述**: 刚补充能量就成为高能量目标，与资源稀缺生存常态逻辑冲突。\n"
         f"- **证据**: > {evidence}"
     )
 
@@ -401,67 +301,55 @@ def test_deterministic_review_patch_fixes_name_inconsistency(tmp_path) -> None:
     assert text == "前面的老张回过头。周也看着老张被拖出大门。"
 
 
-def test_deterministic_review_patch_removes_food_lure_contradiction(tmp_path) -> None:
+def test_deterministic_review_patch_leaves_story_repairs_to_llm(tmp_path) -> None:
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    evidence = (
-        "汪禾的牺牲，不仅是因为他制造了气味干扰，更因为他是一个刚刚进食过压缩饼干、"
-        "体内重新获得了热量和营养的“优质食物源”。那半块饼干的代价，就是让他成为了藤蔓首选的吞噬目标。"
-    )
-    report = (
-        "### 🔴 问题 1 [BLOCKING]\n"
-        "- **类别**: stale_blocking_evidence\n"
-        "- **描述**: 旧阻断证据仍保留，压缩饼干成为优质食物源与配给制生存常态逻辑冲突。\n"
-        f"- **证据**: > {evidence}"
-    )
-
-    text, applied = pipeline._apply_deterministic_review_patches(
-        f"前文。\n\n{evidence}\n\n后文。",
-        report,
-    )
-
-    assert applied == 1
-    assert evidence not in text
-    assert "压缩饼干" not in text
-    assert "营养液、福尔马林和血" in text
-
-
-def test_deterministic_review_patch_adds_missing_research_material(tmp_path) -> None:
-    pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    original = "急救包里的逆转录酶硌着他的肋骨，那是汪禾用命换来的七分之一概率。"
-    report = (
-        "### 🔴 问题 1 [BLOCKING]\n"
-        "- **类别**: outline_object_guard\n"
-        "- **描述**: 候选稿遗漏大纲要求的关键道具：研究资料。\n"
-        "- **证据**: > 大纲要求“研究资料”出现在本章逃离链条中。"
-    )
-
-    text, applied = pipeline._apply_deterministic_review_patches(original, report)
-
-    assert applied == 1
-    assert "防水资料袋" in text
-    assert "实验记录、配方页和数据芯片" in text
-
-
-def test_deterministic_review_patch_removes_accountant_tactical_ooc(tmp_path) -> None:
-    pipeline = WritingPipeline(DummyProvider(), tmp_path)
-    paragraph = (
-        "聚居地不是避难所，而是养殖场。那些高墙和铁丝网，不是为了把禾苗挡在外面，"
-        "而是为了把人类圈在里面。当禾苗需要进食时，标记者就会发作，引导藤蔓精准收割。"
-        "人类在恐惧中互相依偎，以为只要熬过冬天就能等来救援，却不知道自己只是被圈养在笼中的肉畜，"
-        "每一寸脂肪的积累，都只是为了最终的屠宰。"
-    )
+    text = "主角直接凭能力说出了路线、数量和动机。"
     report = (
         "### 🔴 问题 1 [BLOCKING]\n"
         "- **类别**: setting\n"
-        "- **描述**: 周也是前财务从业者，但文中出现战略储备、精确制导的屠宰、战术规避，战术素养严重割裂。"
+        "- **描述**: 能力边界被越权，具体修法需要结合大纲和当前场景。"
     )
 
-    text, applied = pipeline._apply_deterministic_review_patches(paragraph, report)
+    patched, applied = pipeline._apply_deterministic_review_patches(text, report)
 
-    assert applied >= 1
-    assert "精准收割" not in text
-    assert "错账" in text
-    assert "亏空" in text
+    assert applied == 0
+    assert patched == text
+
+
+def test_review_fragments_include_quoted_source_text(tmp_path) -> None:
+    pipeline = WritingPipeline(DummyProvider(), tmp_path)
+    report = (
+        "### 🟠 问题 1 [BLOCKING]\n"
+        "- **证据**: > 大纲要求：‘主角仍在现场却未察觉异常。’ "
+        "正文实际情况：‘主角接过文件，转身走向自己的办公区。’随后视角切换至配角。"
+    )
+
+    fragments = pipeline._review_evidence_fragments(report)
+
+    assert "主角接过文件，转身走向自己的办公区。" in fragments
+    assert "转身走向自己的办公区" in fragments
+
+
+def test_focused_patch_windows_include_adjacent_paragraphs(tmp_path) -> None:
+    pipeline = WritingPipeline(DummyProvider(), tmp_path)
+    text = (
+        "主角沉默了两秒。\n\n"
+        "“知道了。卷宗归档吧。”她接过文件，转身走向自己的办公区。\n\n"
+        "配角在背后欲言又止，最终只是看着主角的背影消失在转角。"
+    )
+    report = (
+        "### 🟠 问题 1 [BLOCKING]\n"
+        "- **描述**: 大纲要求主角未察觉，但正文让主角离场，视角切换到配角。\n"
+        "- **证据**: > 正文实际情况：‘主角接过文件，转身走向自己的办公区。’随后视角切换至配角。"
+    )
+
+    windows = pipeline._focused_patch_windows(
+        text,
+        report,
+        known_entities=["主角"],
+    )
+
+    assert any("转身走向自己的办公区" in window and "配角在背后" in window for window in windows)
 
 
 def test_entity_guard_blocks_missing_required_entity(tmp_path) -> None:
@@ -510,13 +398,13 @@ def test_candidate_guard_blocks_stale_blocking_evidence(tmp_path) -> None:
 
     pipeline = WritingPipeline(DummyProvider(), tmp_path)
     evidence = (
-        "汪禾的牺牲，不仅是因为他制造了气味干扰，更因为他是一个刚刚进食过压缩饼干、"
-        "体内重新获得了热量和营养的“优质食物源”。那半块饼干的代价，就是让他成为了藤蔓首选的吞噬目标。"
+        "角色甲的牺牲，不仅是因为他制造了气味干扰，更因为他刚刚补充过能量，"
+        "被错误写成了“高能量目标”。那次补给的代价，就是让他成为了怪物首选的攻击目标。"
     )
     previous_report = (
         "### 🟠 问题 1 [BLOCKING]\n"
         "- **类别**: logic\n"
-        "- **描述**: 刚刚进食压缩饼干成为优质食物源，与配给制生存常态逻辑冲突。\n"
+        "- **描述**: 刚补充能量就成为高能量目标，与资源稀缺生存常态逻辑冲突。\n"
         f"- **证据**: > {evidence}"
     )
     result = ReviewResult(chapter_number=9, passed=True)
@@ -602,6 +490,41 @@ def test_repair_improvement_can_reduce_nonblocking_risk(tmp_path) -> None:
     assert pipeline._is_repair_improvement(noisier, baseline) is False
 
 
+def test_repair_improvement_accepts_smaller_issue_list_with_same_blockers(tmp_path) -> None:
+    from aznovel.models.review import ReviewIssue, ReviewResult
+
+    pipeline = WritingPipeline(DummyProvider(), tmp_path)
+    baseline = ReviewResult(
+        chapter_number=5,
+        issues=[
+            ReviewIssue(severity="high", category="logic", blocking=True),
+            ReviewIssue(severity="low", category="style", blocking=False),
+            ReviewIssue(severity="low", category="continuity", blocking=False),
+            ReviewIssue(severity="low", category="ai_flavor", blocking=False),
+            ReviewIssue(severity="low", category="setting", blocking=False),
+        ],
+    )
+    baseline.compute_derived()
+
+    smaller = ReviewResult(
+        chapter_number=5,
+        issues=[ReviewIssue(severity="critical", category="logic", blocking=True)],
+    )
+    smaller.compute_derived()
+
+    much_riskier = ReviewResult(
+        chapter_number=5,
+        issues=[
+            ReviewIssue(severity="critical", category="logic", blocking=True),
+            ReviewIssue(severity="critical", category="outline", blocking=False),
+        ],
+    )
+    much_riskier.compute_derived()
+
+    assert pipeline._is_repair_improvement(smaller, baseline) is True
+    assert pipeline._is_repair_improvement(much_riskier, baseline) is False
+
+
 def test_repair_improvement_rejects_same_blocker_with_more_issues(tmp_path) -> None:
     from aznovel.models.review import ReviewIssue, ReviewResult
 
@@ -669,6 +592,141 @@ async def test_repair_candidates_do_not_overwrite_official_review(tmp_path) -> N
     assert final_result.blocking_count == 1
     assert "official current report" in final_report
     assert not (tmp_path / "审查报告" / "chapter_004_review.md").exists()
+
+
+async def test_repair_chapter_continues_from_candidate_when_official_exists(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from aznovel.core.contract_manager import ContractManager
+    from aznovel.models.contract import MasterSetting
+    from aznovel.models.project import ProjectInfo, ProjectState, ProtagonistState
+    from aznovel.models.review import ReviewResult
+    from aznovel.storage import project_fs
+    from aznovel.storage.state_store import StateStore
+
+    project_fs.ensure_project_dirs(tmp_path)
+    StateStore(tmp_path).save(
+        ProjectState(
+            project_info=ProjectInfo(title="测试项目", genre="urban"),
+            protagonist=ProtagonistState(name="主角"),
+        )
+    )
+    ContractManager(tmp_path).save_master_setting(MasterSetting(genre="urban"))
+    _write_test_chapter(tmp_path, 3, "正式", "正式正文")
+
+    candidates_dir = tmp_path / ".aznovel" / "candidates"
+    candidates_dir.mkdir(parents=True)
+    candidate_path = candidates_dir / "chapter_003.candidate.md"
+    candidate_review_path = candidates_dir / "chapter_003.candidate_review.md"
+    candidate_path.write_text("# 候选\n\n候选正文\n", encoding="utf-8")
+    candidate_review_path.write_text("候选审查", encoding="utf-8")
+
+    class FakeReviewEngine:
+        def __init__(self) -> None:
+            self.seen_text = ""
+
+        async def review_chapter(self, chapter_text, contract):
+            self.seen_text = chapter_text
+            return ReviewResult(chapter_number=3, passed=True)
+
+    class FakeCommitService:
+        async def commit_chapter(self, *args, **kwargs):
+            return SimpleNamespace(status="accepted")
+
+    pipeline = WritingPipeline(DummyProvider(), tmp_path)
+    fake_review = FakeReviewEngine()
+    pipeline._review_engine = fake_review
+    pipeline._commit_service = FakeCommitService()
+
+    ok = await pipeline.repair_chapter(3)
+
+    assert ok is True
+    assert fake_review.seen_text == "候选正文"
+    assert not candidate_path.exists()
+    assert not candidate_review_path.exists()
+
+
+async def test_transactional_repair_uses_structured_llm_task_first(tmp_path) -> None:
+    from aznovel.models.contract import ReviewContract
+    from aznovel.models.review import ReviewIssue, ReviewResult
+
+    original = "她直接凭能力说出了路线、数量和动机。"
+    repaired = "她先核对外部记录，再只用能力确认对方刚刚说出的字面回答。"
+
+    class StructuredProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_json(self, messages, **kwargs):
+            self.calls.append(messages[0]["content"])
+            if "修复规划器" in messages[0]["content"]:
+                return {
+                    "tasks": [
+                        {
+                            "issue_id": "I1",
+                            "blocking": True,
+                            "category": "setting",
+                            "violated_contract": "能力只能判断字面回答",
+                            "evidence": [original],
+                            "paragraph_indexes": [1],
+                            "required_fix": "把具体细节来源改为外部证据，能力只确认字面回答。",
+                            "success_criteria": ["不再让能力直接给出路线和数量"],
+                        }
+                    ]
+                }
+            return {
+                "edits": [
+                    {
+                        "old": original,
+                        "new": repaired,
+                        "reason": "I1: 约束能力边界",
+                    }
+                ]
+            }
+
+    class FakeReviewEngine:
+        async def review_chapter(self, chapter_text, contract):
+            if "外部记录" in chapter_text:
+                result = ReviewResult(chapter_number=1, passed=True)
+            else:
+                result = ReviewResult(
+                    chapter_number=1,
+                    issues=[
+                        ReviewIssue(
+                            severity="critical",
+                            category="setting",
+                            blocking=True,
+                        )
+                    ],
+                )
+            result.compute_derived()
+            return result
+
+    provider = StructuredProvider()
+    pipeline = WritingPipeline(provider, tmp_path)
+    pipeline._review_engine = FakeReviewEngine()
+    baseline = ReviewResult(
+        chapter_number=1,
+        issues=[ReviewIssue(severity="critical", category="setting", blocking=True)],
+    )
+    baseline.compute_derived()
+
+    text, result, report, accepted, rejected = await pipeline._transactional_local_patch_repair(
+        original,
+        baseline,
+        ReviewContract(chapter_number=1),
+        "# 审查报告\n### 问题 1 [BLOCKING]\n能力被写成越权推理系统。",
+        chapter=1,
+        outline={"summary": "能力只能判断字面回答。"},
+        known_entities=["主角"],
+        reference_text=original,
+    )
+
+    assert accepted == 1
+    assert rejected == 0
+    assert result.passed is True
+    assert text == repaired
+    assert any("修复规划器" in call for call in provider.calls)
 
 
 async def test_transactional_patch_rejects_worsening_edits(tmp_path) -> None:

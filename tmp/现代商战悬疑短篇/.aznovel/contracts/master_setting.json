@@ -1,0 +1,33 @@
+{
+  "contract_type": "MASTER_SETTING",
+  "genre": "mystery_lit",
+  "sub_genres": [
+    "本格推理",
+    "社会派推理",
+    "悬疑小说",
+    "犯罪小说"
+  ],
+  "core_tone": "冷静克制、逻辑严密、气氛压抑紧张",
+  "pacing_strategy": "线索铺陈-误导-揭示交替，逐步收紧悬念",
+  "satisfaction_points": [
+    "风控视角揭开并购黑幕，层层反转牵出家族内斗与旧案，结尾商业伦理与个人复仇的两难",
+    "推理过程的逻辑快感",
+    "真相揭晓时的震撼",
+    "细节伏笔的前后呼应",
+    "对犯罪动机的人性剖析",
+    "智力上的博弈感"
+  ],
+  "anti_patterns": [
+    "关键线索无中生有",
+    "推理过程跳跃无逻辑",
+    "凶手身份过于明显",
+    "动机牵强不合理",
+    "为了反转而反转",
+    "气氛营造过度而推理不足"
+  ],
+  "style_priorities": [],
+  "world_rules": [],
+  "golden_finger": "",
+  "protagonist_archetype": "",
+  "constraints": []
+}
